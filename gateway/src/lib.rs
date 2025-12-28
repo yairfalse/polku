@@ -25,13 +25,32 @@ pub mod metrics;
 pub mod output;
 pub mod server;
 
-// Re-export proto types
+// Re-export proto types from central proto repo
 pub mod proto {
     #![allow(clippy::unwrap_used)]
     #![allow(clippy::expect_used)]
     #![allow(clippy::panic)]
     #![allow(clippy::derive_partial_eq_without_eq)]
-    include!("proto/polku.v1.rs");
+
+    /// AHTI event types (the unified event format)
+    pub mod ahti {
+        include!("proto/ahti.v1.rs");
+    }
+
+    /// POLKU gateway service types
+    pub mod polku {
+        include!("proto/polku.v1.rs");
+    }
+
+    // Re-export commonly used types at proto level for convenience
+    pub use ahti::AhtiEvent as Event;
+    pub use ahti::*;
+    pub use polku::gateway_server;
+    pub use polku::Ack;
+    pub use polku::ComponentHealth;
+    pub use polku::EventBatch;
+    pub use polku::HealthRequest;
+    pub use polku::HealthResponse;
 }
 
 pub use config::Config;
