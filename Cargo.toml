@@ -1,0 +1,25 @@
+[workspace]
+resolver = "2"
+members = ["gateway"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+authors = ["Yair Etziony <yair.etziony@false-systems.com>"]
+license = "Apache-2.0"
+repository = "https://github.com/falsesystems/polku"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+todo = "warn"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+opt-level = 3
+strip = true

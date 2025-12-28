@@ -1,0 +1,48 @@
+[package]
+name = "polku-gateway"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Pluggable gRPC event gateway"
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "polku-gateway"
+path = "src/main.rs"
+
+[dependencies]
+# gRPC
+tonic = "0.12"
+prost = "0.13"
+prost-types = "0.13"
+
+# Async
+tokio = { version = "1", features = ["full", "signal"] }
+tokio-stream = "0.1"
+futures = "0.3"
+async-trait = "0.1"
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+prometheus = "0.13"
+
+# Utils
+parking_lot = "0.12"
+ulid = "1"
+chrono = { version = "0.4", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[build-dependencies]
+tonic-build = "0.12"
+
+[dev-dependencies]
+tokio-test = "0.4"
