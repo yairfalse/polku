@@ -37,9 +37,11 @@ pub enum LogFormat {
 
 impl Default for Config {
     fn default() -> Self {
+        use std::net::{IpAddr, Ipv4Addr};
+
         Self {
-            grpc_addr: "0.0.0.0:50051".parse().unwrap(),
-            metrics_addr: "0.0.0.0:9090".parse().unwrap(),
+            grpc_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 50051),
+            metrics_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 9090),
             buffer_capacity: 100_000,
             batch_size: 1000,
             flush_interval_ms: 100,
@@ -51,6 +53,7 @@ impl Default for Config {
 
 impl Config {
     /// Load configuration from environment variables
+    #[allow(clippy::result_large_err)]
     pub fn from_env() -> Result<Self> {
         let mut config = Config::default();
 

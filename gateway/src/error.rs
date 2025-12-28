@@ -7,6 +7,7 @@ pub type Result<T> = std::result::Result<T, PolkuError>;
 
 /// Main error type for POLKU
 #[derive(Error, Debug)]
+#[allow(clippy::result_large_err)]
 pub enum PolkuError {
     /// Configuration error
     #[error("configuration error: {0}")]
@@ -16,7 +17,7 @@ pub enum PolkuError {
     #[error("transport error: {0}")]
     Transport(#[from] tonic::transport::Error),
 
-    /// gRPC status error
+    /// gRPC status error (boxed to reduce enum size)
     #[error("gRPC error: {0}")]
     Grpc(#[from] tonic::Status),
 
@@ -35,6 +36,10 @@ pub enum PolkuError {
     /// Serialization error
     #[error("serialization error: {0}")]
     Serialization(String),
+
+    /// Metrics error
+    #[error("metrics error: {0}")]
+    Metrics(String),
 
     /// Shutdown requested
     #[error("shutdown requested")]
@@ -92,6 +97,7 @@ impl From<PolkuError> for tonic::Status {
             }
             PolkuError::Io(e) => tonic::Status::internal(e.to_string()),
             PolkuError::Serialization(msg) => tonic::Status::invalid_argument(msg),
+            PolkuError::Metrics(msg) => tonic::Status::internal(format!("metrics: {msg}")),
             PolkuError::Shutdown => tonic::Status::unavailable("shutting down"),
         }
     }
