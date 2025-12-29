@@ -1,7 +1,7 @@
-//! Output system for POLKU
+//! Emitter system for POLKU
 //!
-//! Outputs send Events to various destinations (gRPC backends, Kafka, stdout, etc.)
-//! All registered outputs receive events in a fan-out pattern.
+//! Emitters send Messages to various destinations (gRPC backends, Kafka, stdout, etc.)
+//! All registered emitters receive messages in a fan-out pattern.
 
 pub mod stdout;
 
@@ -9,25 +9,25 @@ use crate::error::PluginError;
 use crate::proto::Event;
 use async_trait::async_trait;
 
-pub use stdout::StdoutOutput;
+pub use stdout::StdoutEmitter;
 
-/// Output trait - sends Events to destinations
+/// Emitter trait - sends Events to destinations
 ///
-/// Each output handles forwarding events to a specific destination.
-/// Multiple outputs can be registered and events will be sent to all of them.
+/// Each emitter handles forwarding events to a specific destination.
+/// Multiple emitters can be registered and events will be sent to all of them.
 ///
 /// # Example
 ///
 /// ```ignore
-/// struct MyDestinationOutput {
+/// struct MyDestinationEmitter {
 ///     client: MyGrpcClient,
 /// }
 ///
 /// #[async_trait]
-/// impl Output for MyDestinationOutput {
+/// impl Emitter for MyDestinationEmitter {
 ///     fn name(&self) -> &'static str { "my-destination" }
 ///
-///     async fn send(&self, events: &[Event]) -> Result<(), PluginError> {
+///     async fn emit(&self, events: &[Event]) -> Result<(), PluginError> {
 ///         self.client.send_events(events).await?;
 ///         Ok(())
 ///     }
@@ -38,18 +38,18 @@ pub use stdout::StdoutOutput;
 /// }
 /// ```
 #[async_trait]
-pub trait Output: Send + Sync {
-    /// Output name for identification and logging
+pub trait Emitter: Send + Sync {
+    /// Emitter name for identification and logging
     fn name(&self) -> &'static str;
 
-    /// Send events to the destination
+    /// Emit events to the destination
     ///
     /// # Arguments
-    /// * `events` - Slice of Events to send
+    /// * `events` - Slice of Events to emit
     ///
     /// # Returns
     /// Ok(()) on success, PluginError on failure
-    async fn send(&self, events: &[Event]) -> Result<(), PluginError>;
+    async fn emit(&self, events: &[Event]) -> Result<(), PluginError>;
 
     /// Health check for the destination
     ///

@@ -1,15 +1,14 @@
-//! Input system for POLKU
+//! Ingestor system for POLKU
 //!
-//! Inputs transform raw bytes from various sources into unified Events.
-//! Each source (e.g., "my-agent") registers an Input that knows how to
-//! deserialize that source's format.
+//! Ingestors decode raw bytes from various protocols into unified Messages.
+//! Each source registers an Ingestor that knows how to deserialize that format.
 
 use crate::error::PluginError;
 use crate::proto::Event;
 
-/// Context for input transformation
+/// Context for ingestion
 #[derive(Debug, Clone)]
-pub struct InputContext<'a> {
+pub struct IngestContext<'a> {
     /// Source identifier (e.g., "my-agent", "otel-collector")
     pub source: &'a str,
     /// Cluster/environment identifier
@@ -18,31 +17,30 @@ pub struct InputContext<'a> {
     pub format: &'a str,
 }
 
-/// Input trait - transforms raw bytes into Events
+/// Ingestor trait - decodes protocol bytes into Events
 ///
-/// Each input handles a specific source format and transforms it
+/// Each ingestor handles a specific source format and transforms it
 /// into the unified Event format that POLKU uses internally.
 ///
 /// # Example
 ///
 /// ```ignore
-/// struct MyAgentInput;
+/// struct MyAgentIngestor;
 ///
-/// impl Input for MyAgentInput {
+/// impl Ingestor for MyAgentIngestor {
 ///     fn name(&self) -> &'static str { "my-agent" }
 ///
-///     fn transform(&self, ctx: &InputContext, data: &[u8]) -> Result<Vec<Event>, PluginError> {
-///         // Deserialize your format and create Events
+///     fn ingest(&self, ctx: &IngestContext, data: &[u8]) -> Result<Vec<Event>, PluginError> {
 ///         let my_events: Vec<MyEvent> = deserialize(data)?;
 ///         Ok(my_events.into_iter().map(|e| e.into_event()).collect())
 ///     }
 /// }
 /// ```
-pub trait Input: Send + Sync {
-    /// Input name for identification and logging
+pub trait Ingestor: Send + Sync {
+    /// Ingestor name for identification and logging
     fn name(&self) -> &'static str;
 
-    /// Transform raw bytes into Events
+    /// Decode raw bytes into Events
     ///
     /// # Arguments
     /// * `ctx` - Context with source, cluster, and format information
@@ -50,5 +48,5 @@ pub trait Input: Send + Sync {
     ///
     /// # Returns
     /// Vector of Events or a PluginError
-    fn transform(&self, ctx: &InputContext, data: &[u8]) -> Result<Vec<Event>, PluginError>;
+    fn ingest(&self, ctx: &IngestContext, data: &[u8]) -> Result<Vec<Event>, PluginError>;
 }

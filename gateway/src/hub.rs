@@ -19,10 +19,10 @@
 //! ```
 
 use crate::buffer::RingBuffer;
+use crate::emit::Emitter;
 use crate::error::PluginError;
 use crate::message::Message;
 use crate::middleware::{Middleware, MiddlewareChain};
-use crate::output::Output;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
@@ -41,8 +41,8 @@ pub struct Hub {
     buffer_capacity: usize,
     /// Middleware chain (applied before buffering)
     middleware: MiddlewareChain,
-    /// Registered outputs
-    outputs: Vec<Arc<dyn Output>>,
+    /// Registered emitters
+    emitters: Vec<Arc<dyn Emitter>>,
 }
 
 impl Hub {
@@ -51,7 +51,7 @@ impl Hub {
         Self {
             buffer_capacity: 10_000,
             middleware: MiddlewareChain::new(),
-            outputs: Vec::new(),
+            emitters: Vec::new(),
         }
     }
 
@@ -71,19 +71,24 @@ impl Hub {
         self
     }
 
-    /// Add an output destination
+    /// Add an emitter destination
     ///
-    /// All messages are sent to all outputs (fan-out).
+    /// All messages are sent to all emitters (fan-out).
     /// Use `route_to` field in Message to control routing.
-    pub fn output<O: Output + 'static>(mut self, output: O) -> Self {
-        self.outputs.push(Arc::new(output));
+    pub fn emitter<E: Emitter + 'static>(mut self, emitter: E) -> Self {
+        self.emitters.push(Arc::new(emitter));
         self
     }
 
-    /// Add an output destination (Arc version)
-    pub fn output_arc(mut self, output: Arc<dyn Output>) -> Self {
-        self.outputs.push(output);
+    /// Add an emitter destination (Arc version)
+    pub fn emitter_arc(mut self, emitter: Arc<dyn Emitter>) -> Self {
+        self.emitters.push(emitter);
         self
+    }
+
+    // Keep old name for compatibility
+    pub fn output<E: Emitter + 'static>(self, emitter: E) -> Self {
+        self.emitter(emitter)
     }
 
     /// Build a message sender for this hub
@@ -99,7 +104,7 @@ impl Hub {
             rx,
             buffer: Arc::new(RingBuffer::new(self.buffer_capacity)),
             middleware: self.middleware,
-            outputs: self.outputs,
+            emitters: self.emitters,
         };
 
         (sender, runner)
@@ -140,7 +145,7 @@ pub struct HubRunner {
     rx: mpsc::Receiver<Message>,
     buffer: Arc<RingBuffer>,
     middleware: MiddlewareChain,
-    outputs: Vec<Arc<dyn Output>>,
+    emitters: Vec<Arc<dyn Emitter>>,
 }
 
 impl HubRunner {
@@ -153,21 +158,21 @@ impl HubRunner {
     /// 4. Periodically flush to outputs
     pub async fn run(mut self) -> Result<(), PluginError> {
         info!(
-            outputs = self.outputs.len(),
+            emitters = self.emitters.len(),
             middleware = self.middleware.len(),
             buffer_capacity = self.buffer.capacity(),
             "Hub started"
         );
 
-        if self.outputs.is_empty() {
-            warn!("No outputs registered - messages will be buffered but not delivered");
+        if self.emitters.is_empty() {
+            warn!("No emitters registered - messages will be buffered but not delivered");
         }
 
-        // Spawn output flusher
+        // Spawn emitter flusher
         let buffer = Arc::clone(&self.buffer);
-        let outputs = self.outputs.clone();
+        let emitters = self.emitters.clone();
         let flush_handle = tokio::spawn(async move {
-            flush_loop(buffer, outputs).await;
+            flush_loop(buffer, emitters).await;
         });
 
         // Process incoming messages
@@ -197,8 +202,8 @@ impl HubRunner {
     }
 }
 
-/// Background flush loop - sends buffered messages to outputs
-async fn flush_loop(buffer: Arc<RingBuffer>, outputs: Vec<Arc<dyn Output>>) {
+/// Background flush loop - sends buffered messages to emitters
+async fn flush_loop(buffer: Arc<RingBuffer>, emitters: Vec<Arc<dyn Emitter>>) {
     const BATCH_SIZE: usize = 100;
     const FLUSH_INTERVAL_MS: u64 = 10;
 
@@ -216,12 +221,12 @@ async fn flush_loop(buffer: Arc<RingBuffer>, outputs: Vec<Arc<dyn Output>>) {
             .map(crate::proto::Event::from)
             .collect();
 
-        // Send to all outputs (fan-out)
-        for output in &outputs {
+        // Send to all emitters (fan-out)
+        for emitter in &emitters {
             // Check routing
             let routed_events: Vec<_> = events
                 .iter()
-                .filter(|e| e.route_to.is_empty() || e.route_to.iter().any(|r| r == output.name()))
+                .filter(|e| e.route_to.is_empty() || e.route_to.iter().any(|r| r == emitter.name()))
                 .cloned()
                 .collect();
 
@@ -229,18 +234,18 @@ async fn flush_loop(buffer: Arc<RingBuffer>, outputs: Vec<Arc<dyn Output>>) {
                 continue;
             }
 
-            if let Err(e) = output.send(&routed_events).await {
+            if let Err(e) = emitter.emit(&routed_events).await {
                 error!(
-                    output = output.name(),
+                    emitter = emitter.name(),
                     error = %e,
                     count = routed_events.len(),
-                    "Failed to send to output"
+                    "Failed to emit"
                 );
             } else {
                 debug!(
-                    output = output.name(),
+                    emitter = emitter.name(),
                     count = routed_events.len(),
-                    "Sent to output"
+                    "Emitted"
                 );
             }
         }
@@ -251,8 +256,8 @@ async fn flush_loop(buffer: Arc<RingBuffer>, outputs: Vec<Arc<dyn Output>>) {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use crate::emit::StdoutEmitter;
     use crate::middleware::{Filter, Transform};
-    use crate::output::StdoutOutput;
     use bytes::Bytes;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -261,15 +266,15 @@ mod tests {
         let hub = Hub::new()
             .buffer_capacity(1000)
             .middleware(Transform::new(|msg| msg))
-            .output(StdoutOutput::new());
+            .emitter(StdoutEmitter::new());
 
         assert_eq!(hub.buffer_capacity, 1000);
-        assert_eq!(hub.outputs.len(), 1);
+        assert_eq!(hub.emitters.len(), 1);
     }
 
     #[test]
     fn test_hub_build() {
-        let hub = Hub::new().output(StdoutOutput::new());
+        let hub = Hub::new().emitter(StdoutEmitter::new());
 
         let (sender, runner) = hub.build();
 

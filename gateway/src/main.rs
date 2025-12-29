@@ -1,6 +1,6 @@
-//! POLKU Gateway - Pluggable gRPC Event Gateway
+//! POLKU Gateway - Programmatic Protocol Hub
 //!
-//! An open-source, format-agnostic gRPC event gateway.
+//! Infrastructure library for internal service communication.
 //!
 //! ## Usage
 //!
@@ -21,7 +21,7 @@
 
 use polku_gateway::buffer::RingBuffer;
 use polku_gateway::config::Config;
-use polku_gateway::output::StdoutOutput;
+use polku_gateway::emit::StdoutEmitter;
 use polku_gateway::registry::PluginRegistry;
 use polku_gateway::server::GatewayService;
 use std::sync::Arc;
@@ -55,14 +55,14 @@ async fn main() -> anyhow::Result<()> {
     // Create plugin registry
     let mut registry = PluginRegistry::new();
 
-    // Register stdout output for debugging (pretty print mode)
-    registry.register_output(Arc::new(StdoutOutput::pretty()));
-    info!("Registered stdout output (debug mode)");
+    // Register stdout emitter for debugging (pretty print mode)
+    registry.register_emitter(Arc::new(StdoutEmitter::pretty()));
+    info!("Registered stdout emitter (debug mode)");
 
-    // Note: Inputs are registered based on configuration.
-    // Users extend POLKU by implementing the Input trait for their sources.
+    // Note: Ingestors are registered based on configuration.
+    // Users extend POLKU by implementing the Ingestor trait for their sources.
     // Example:
-    //   registry.register_input("my-agent", Arc::new(MyAgentInput::new()));
+    //   registry.register_ingestor("my-agent", Arc::new(MyAgentIngestor::new()));
 
     let registry = Arc::new(registry);
 
@@ -110,7 +110,7 @@ async fn shutdown_signal(registry: Arc<PluginRegistry>) {
         _ = terminate => info!("Received SIGTERM, shutting down"),
     }
 
-    // Graceful shutdown of outputs
+    // Graceful shutdown of emitters
     if let Err(e) = registry.shutdown().await {
         tracing::error!(error = %e, "Error during shutdown");
     }

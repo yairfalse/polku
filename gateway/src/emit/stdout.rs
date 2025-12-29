@@ -1,65 +1,64 @@
-//! Stdout output for debugging
+//! Stdout emitter for debugging
 //!
 //! Prints events to stdout in a human-readable format.
 //! Useful for development and debugging.
 
+use crate::emit::Emitter;
 use crate::error::PluginError;
-use crate::output::Output;
 use crate::proto::Event;
 use async_trait::async_trait;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// Stdout output - prints events for debugging
-pub struct StdoutOutput {
+/// Stdout emitter - prints events for debugging
+pub struct StdoutEmitter {
     /// Pretty print events as JSON
     pretty: bool,
-    /// Count of events sent
-    sent_count: AtomicU64,
+    /// Count of events emitted
+    emitted_count: AtomicU64,
 }
 
-impl StdoutOutput {
-    /// Create a new StdoutOutput plugin
+impl StdoutEmitter {
+    /// Create a new StdoutEmitter
     pub fn new() -> Self {
         Self {
             pretty: false,
-            sent_count: AtomicU64::new(0),
+            emitted_count: AtomicU64::new(0),
         }
     }
 
-    /// Create a new StdoutOutput plugin with pretty printing
+    /// Create a new StdoutEmitter with pretty printing
     pub fn pretty() -> Self {
         Self {
             pretty: true,
-            sent_count: AtomicU64::new(0),
+            emitted_count: AtomicU64::new(0),
         }
     }
 
-    /// Get total events sent
-    pub fn sent_count(&self) -> u64 {
-        self.sent_count.load(Ordering::Relaxed)
+    /// Get total events emitted
+    pub fn emitted_count(&self) -> u64 {
+        self.emitted_count.load(Ordering::Relaxed)
     }
 }
 
-impl Default for StdoutOutput {
+impl Default for StdoutEmitter {
     fn default() -> Self {
         Self::new()
     }
 }
 
 #[async_trait]
-impl Output for StdoutOutput {
+impl Emitter for StdoutEmitter {
     fn name(&self) -> &'static str {
         "stdout"
     }
 
-    async fn send(&self, events: &[Event]) -> Result<(), PluginError> {
+    async fn emit(&self, events: &[Event]) -> Result<(), PluginError> {
         use std::io::Write;
 
         let mut stdout = std::io::stdout().lock();
 
         for event in events {
             if self.pretty {
-                // Pretty format
                 writeln!(
                     stdout,
                     "┌─ Event ─────────────────────────────────────────────",
@@ -82,7 +81,6 @@ impl Output for StdoutOutput {
                 )
                 .ok();
             } else {
-                // Compact format
                 writeln!(
                     stdout,
                     "[{}] {}:{} ({} bytes)",
@@ -95,14 +93,13 @@ impl Output for StdoutOutput {
             }
         }
 
-        self.sent_count
+        self.emitted_count
             .fetch_add(events.len() as u64, Ordering::Relaxed);
 
         Ok(())
     }
 
     async fn health(&self) -> bool {
-        // Stdout is always healthy
         true
     }
 }
@@ -125,18 +122,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_send_events() {
-        let output = StdoutOutput::new();
+    async fn test_emit_events() {
+        let emitter = StdoutEmitter::new();
         let events = vec![make_event("e1"), make_event("e2")];
 
-        output.send(&events).await.unwrap();
+        emitter.emit(&events).await.unwrap();
 
-        assert_eq!(output.sent_count(), 2);
+        assert_eq!(emitter.emitted_count(), 2);
     }
 
     #[tokio::test]
     async fn test_health() {
-        let output = StdoutOutput::new();
-        assert!(output.health().await);
+        let emitter = StdoutEmitter::new();
+        assert!(emitter.health().await);
     }
 }

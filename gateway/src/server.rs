@@ -7,7 +7,7 @@
 //! - Transform: Clients send raw bytes, InputPlugins transform them to Events
 
 use crate::buffer::RingBuffer;
-use crate::input::InputContext;
+use crate::ingest::IngestContext;
 use crate::message::Message;
 use crate::proto::{
     Ack, ComponentHealth, Event, HealthRequest, HealthResponse, IngestBatch, IngestEvent,
@@ -70,7 +70,7 @@ impl GatewayService {
                 Ok(event.clone())
             }
             Some(ingest_event::Payload::Raw(data)) => {
-                let ctx = InputContext {
+                let ctx = IngestContext {
                     source,
                     cluster,
                     format: &ingest.format,
@@ -247,7 +247,7 @@ fn process_batch_with_registry(
     match &batch.payload {
         Some(ingest_batch::Payload::Events(payload)) => Ok(payload.events.clone()),
         Some(ingest_batch::Payload::Raw(payload)) => {
-            let ctx = InputContext {
+            let ctx = IngestContext {
                 source,
                 cluster,
                 format: &payload.format,

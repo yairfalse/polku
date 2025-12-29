@@ -1,16 +1,16 @@
-//! POLKU - Pluggable gRPC Event Gateway
+//! POLKU - Programmatic Protocol Hub
 //!
-//! An open-source, format-agnostic event gateway that transforms and routes
-//! events from any gRPC source to any destination.
+//! Infrastructure library for internal service communication.
+//! Logic IS code - you have full Rust power to decide how data flows.
 //!
-//! # Architecture
+//! # Triadic Plugin Architecture
 //!
 //! ```text
-//! Input Plugins ──► Core (buffer, route) ──► Output Plugins
+//! Ingestors ──► Middleware ──► Buffer ──► Emitters
 //! ```
 //!
-//! Both inputs and outputs are pluggable via traits. Users provide their own
-//! plugins for source-specific transformations and destination forwarding.
+//! All three components are pluggable via traits. Users provide their own
+//! ingestors for protocol decoding and emitters for destination delivery.
 
 #![deny(unsafe_code)]
 #![warn(clippy::unwrap_used)]
@@ -19,13 +19,13 @@
 
 pub mod buffer;
 pub mod config;
+pub mod emit;
 pub mod error;
 pub mod hub;
-pub mod input;
+pub mod ingest;
 pub mod message;
 pub mod metrics;
 pub mod middleware;
-pub mod output;
 pub mod registry;
 pub mod server;
 
@@ -38,17 +38,16 @@ pub mod proto {
 
     include!("proto/polku.v1.rs");
 
-    // Re-export commonly used types at proto level for convenience
     pub use gateway_server::Gateway;
     pub use gateway_server::GatewayServer;
 }
 
 pub use config::Config;
+pub use emit::{Emitter, StdoutEmitter};
 pub use error::{PluginError, PolkuError, Result};
 pub use hub::{Hub, HubRunner, MessageSender};
-pub use input::{Input, InputContext};
+pub use ingest::{IngestContext, Ingestor};
 pub use message::Message;
 pub use middleware::{Filter, Middleware, MiddlewareChain, PassThrough, Transform};
-pub use output::{Output, StdoutOutput};
 pub use proto::Event;
 pub use registry::PluginRegistry;
