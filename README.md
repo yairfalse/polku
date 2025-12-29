@@ -1,55 +1,56 @@
 # POLKU
 
-**Pluggable gRPC Event Gateway**
+**Lightweight Internal Message Pipeline**
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.83%2B-orange.svg)](https://www.rust-lang.org)
 
-A high-performance gRPC gateway for transforming and routing events from edge agents to central intelligence. Plugin in, plugin out.
+Decouple your internal services without a message broker. For when Kafka is overkill.
 
 ---
 
 ## What is POLKU?
 
-POLKU is the **path events take from edge to brain**.
+POLKU is a **lightweight message pipeline** that sits between your internal services. It transforms, buffers, and routes messages - without the operational overhead of a full pub/sub system.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                         POLKU                                │
 │                                                              │
-│  Input Plugins        Core              Output Plugins       │
+│  Inputs              Pipeline            Outputs             │
 │  ┌──────────┐    ┌───────────┐        ┌──────────┐         │
-│  │  TAPIO   │───►│ Transform │───────►│   AHTI   │         │
-│  │  PORTTI  │    │  Buffer   │        │   OTEL   │         │
-│  │  ELAVA   │    │  Route    │        │   File   │         │
-│  │  ...     │    └───────────┘        │   ...    │         │
+│  │ gRPC     │───►│ Transform │───────►│ gRPC     │         │
+│  │ REST     │    │ Buffer    │        │ Kafka    │         │
+│  │ Webhook  │    │ Route     │        │ S3       │         │
+│  │ ...      │    └───────────┘        │ ...      │         │
 │  └──────────┘                         └──────────┘         │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-**Why a gateway?**
-- **Decouple sources from destinations** - Add new agents without changing AHTI
-- **Transform formats** - Each agent has its own schema, AHTI wants unified events
-- **Handle backpressure** - Buffer during downstream slowdowns
-- **Pluggable** - Input and output are traits, easy to extend
+## When to Use POLKU
+
+| Scenario | Kafka | POLKU | Direct Call |
+|----------|-------|-------|-------------|
+| Internal agents → backend | Overkill | ✅ | Brittle |
+| Format transformation | ❌ | ✅ | Manual |
+| Buffering during slowdowns | Overkill | ✅ | ❌ |
+| Fan-out to 2-3 services | Overkill | ✅ | Spaghetti |
+| Need replay/persistence | ✅ | ❌ | ❌ |
+| 100+ consumers | ✅ | ❌ | ❌ |
+
+**POLKU is not a message broker.** It's a pipeline for when you need decoupling without the infrastructure tax.
 
 ---
 
-## Status
+## The Pitch
 
-| Component | Status | Notes |
-|-----------|--------|-------|
-| Proto definitions | ✅ | AhtiEvent, Gateway service |
-| Ring buffer | ✅ | FIFO eviction, backpressure signaling |
-| Config | ✅ | Env var configuration |
-| Error types | ✅ | thiserror-based |
-| Prometheus metrics | ✅ | events_received, buffer_size, etc. |
-| InputPlugin trait | ✅ | Transform bytes → Events |
-| OutputPlugin trait | ✅ | Send events to destinations |
-| gRPC server | ✅ | StreamEvents, SendEvent, Health |
-| Main entry point | ✅ | Graceful shutdown |
-| Plugin registry | 🚧 | In progress |
-| Example plugins | 🚧 | TapioInput, StdoutOutput, AhtiOutput |
+| Kafka/NATS | POLKU |
+|------------|-------|
+| JVM, 1GB+ RAM | Rust, 10-20MB RAM |
+| Zookeeper/KRaft cluster | Single binary |
+| Persistent storage required | In-memory buffer |
+| Complex operations | Zero ops |
+| Consumer groups, offsets, partitions | Just send it |
 
 ---
 
@@ -59,76 +60,113 @@ POLKU is the **path events take from edge to brain**.
 # Build
 cargo build --release
 
-# Run tests
-cargo test
-
-# Run gateway
+# Run
 ./target/release/polku-gateway
-```
 
-**Requirements:**
-- Rust 1.83+
-- protoc (protobuf compiler)
+# Test
+cargo test
+```
 
 **Environment Variables:**
 ```bash
 POLKU_GRPC_ADDR=0.0.0.0:50051      # gRPC server address
-POLKU_METRICS_ADDR=0.0.0.0:9090   # Prometheus metrics
-POLKU_BUFFER_CAPACITY=100000      # Event buffer size
-POLKU_LOG_LEVEL=info              # Logging level
+POLKU_BUFFER_CAPACITY=100000       # Event buffer size
+POLKU_LOG_LEVEL=info               # Logging level
 ```
 
 ---
 
 ## Architecture
 
-### Event Flow
+### Message Flow
 
 ```
-1. Agent (TAPIO) streams RawEbpfEvents via gRPC
-   └── polku.v1.Gateway.StreamEvents
+1. Input receives data (gRPC stream, REST webhook, etc.)
+   └── Converts to internal Message format
 
-2. Input plugin transforms to unified format
-   └── RawEbpfEvent → AhtiEvent
+2. Pipeline processes the message
+   ├── Middleware: auth, rate limit, transform
+   └── Buffer: absorb backpressure
 
-3. Events buffered (ring buffer)
-   └── FIFO eviction on overflow
-
-4. Output plugin forwards to destination
-   └── AhtiEvent → AHTI gRPC
-
-5. Ack returned with backpressure signal
-   └── buffer_size in response
+3. Outputs receive the message (fan-out)
+   └── Each output sends to its destination
 ```
 
-### Plugin Traits
+### The Message Envelope
 
 ```rust
-// Input: Transform raw bytes → Events
-#[async_trait]
-pub trait InputPlugin: Send + Sync {
-    fn name(&self) -> &'static str;
-    fn transform(&self, source: &str, data: &[u8]) -> Result<Vec<Event>, PluginError>;
+pub struct Message {
+    pub id: String,                        // Unique ID (ULID)
+    pub timestamp: i64,                    // Unix nanos
+    pub source: String,                    // Origin identifier
+    pub message_type: String,              // User-defined type
+    pub metadata: HashMap<String, String>, // Headers, context
+    pub payload: Bytes,                    // Opaque payload (zero-copy)
+    pub route_to: Vec<String>,             // Output routing hints
 }
+```
 
-// Output: Send events to destination
+POLKU doesn't interpret your payload - it just carries it. Your Input plugins deserialize, your Output plugins serialize.
+
+### Writing Plugins
+
+**Input Plugin** - receive from a protocol:
+
+```rust
 #[async_trait]
-pub trait OutputPlugin: Send + Sync {
+pub trait Input: Send + Sync {
     fn name(&self) -> &'static str;
-    async fn send(&self, events: &[Event]) -> Result<(), PluginError>;
+    async fn run(&self, tx: Sender<Message>) -> Result<(), Error>;
+}
+```
+
+**Output Plugin** - send to a destination:
+
+```rust
+#[async_trait]
+pub trait Output: Send + Sync {
+    fn name(&self) -> &'static str;
+    async fn send(&self, messages: &[Message]) -> Result<(), Error>;
     async fn health(&self) -> bool;
 }
 ```
 
-### Proto Structure
+**Middleware** - transform, filter, route:
 
-Imports from the central [falsesystems/proto](https://github.com/falsesystems/proto) repo:
+```rust
+#[async_trait]
+pub trait Middleware: Send + Sync {
+    fn name(&self) -> &'static str;
+    async fn process(&self, msg: Message) -> Option<Message>;
+}
+```
+
+---
+
+## Example: Internal Agent Pipeline
 
 ```
-proto/
-├── ahti/v1/events.proto      # AhtiEvent (unified format)
-├── polku/v1/gateway.proto    # Gateway service
-└── tapio/v1/raw.proto        # RawEbpfEvent (TAPIO format)
+┌──────────────────────────────────────────────────────────────┐
+│                                                               │
+│   Your Edge Agents                Your Backend               │
+│   ┌─────────┐                     ┌─────────┐               │
+│   │ Agent A │──┐                  │ Backend │               │
+│   └─────────┘  │    ┌────────┐    │         │               │
+│   ┌─────────┐  ├───►│ POLKU  │───►│         │               │
+│   │ Agent B │──┤    │        │    └─────────┘               │
+│   └─────────┘  │    │ • buffer during restart               │
+│   ┌─────────┐  │    │ • transform formats                   │
+│   │ Agent C │──┘    │ • fan-out to OTEL                     │
+│   └─────────┘       └────────┘                              │
+│                          │                                   │
+│                          ▼                                   │
+│                     ┌─────────┐                              │
+│                     │  OTEL   │                              │
+│                     └─────────┘                              │
+│                                                               │
+│   No Kafka. No NATS. Just a lightweight internal pipeline.   │
+│                                                               │
+└──────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -138,40 +176,47 @@ proto/
 ```
 polku/
 ├── Cargo.toml                # Workspace
-├── CLAUDE.md                 # Agent instructions
+├── CLAUDE.md                 # Development guide
 ├── gateway/
 │   ├── Cargo.toml
-│   ├── build.rs              # Proto compilation
 │   └── src/
 │       ├── main.rs           # Entry point
 │       ├── lib.rs            # Library exports
-│       ├── config.rs         # Configuration
-│       ├── error.rs          # Error types
+│       ├── message.rs        # Message type
+│       ├── hub.rs            # Hub builder
 │       ├── buffer.rs         # Ring buffer
-│       ├── metrics.rs        # Prometheus
-│       ├── server.rs         # gRPC service
-│       ├── input/mod.rs      # InputPlugin trait
-│       └── output/mod.rs     # OutputPlugin trait
-└── ../proto/                 # Central proto repo (sibling)
+│       ├── input/            # Input plugins
+│       ├── output/           # Output plugins
+│       └── middleware/       # Middleware
+└── proto/                    # Proto definitions
 ```
 
 ---
 
-## Development
+## Roadmap
 
-```bash
-# Build
-cargo build
+| Phase | Status | Description |
+|-------|--------|-------------|
+| 1 | ✅ | gRPC event gateway, basic plugins |
+| 2 | 🚧 | Generic Message, Middleware, Hub builder |
+| 3 | 📋 | REST input, Kafka output |
+| 4 | 📋 | WebSocket, MQTT inputs |
 
-# Test
-cargo test
+---
 
-# Lint
-cargo clippy -- -D warnings
+## Comparison
 
-# Format
-cargo fmt
-```
+### vs Envoy/Kong
+They're L7 proxies for routing requests. POLKU is a message pipeline for transforming content. They work together - Envoy routes the connection, POLKU handles the payload.
+
+### vs Kafka/NATS
+They're full pub/sub systems with persistence, consumer groups, replay. POLKU is a lightweight pipeline for internal routing without the ops burden.
+
+### vs OTEL Collector
+It's specifically for telemetry (traces, metrics, logs). POLKU is format-agnostic for any internal messages.
+
+### vs Vector
+It's focused on observability data. POLKU is a general-purpose internal pipeline.
 
 ---
 
@@ -180,37 +225,20 @@ cargo fmt
 | Crate | Purpose |
 |-------|---------|
 | `tonic` | gRPC server/client |
-| `prost` | Protocol buffer serialization |
+| `axum` | REST server (planned) |
+| `bytes` | Zero-copy buffers |
 | `tokio` | Async runtime |
 | `tracing` | Structured logging |
-| `prometheus` | Metrics |
 | `parking_lot` | Fast mutex |
-| `thiserror` | Error types |
-
----
-
-## The Ecosystem
-
-| Tool | Purpose | Language |
-|------|---------|----------|
-| **TAPIO** | eBPF agent (kernel events) | Rust |
-| **PORTTI** | K8s API watcher | Go |
-| **ELAVA** | OTEL collector adapter | Go |
-| **POLKU** | Event gateway | Rust |
-| **AHTI** | Central intelligence | Elixir |
 
 ---
 
 ## Naming
 
-**Polku** (Finnish: "path") - The path events take from edge agents to the central brain.
+**Polku** (Finnish: "path") - The path messages take through your system.
 
 ---
 
 ## License
 
 Apache 2.0
-
----
-
-**False Systems** 🇫🇮

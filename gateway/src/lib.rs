@@ -1,8 +1,7 @@
 //! POLKU - Pluggable gRPC Event Gateway
 //!
-//! A high-performance event gateway that transforms events from various sources
-//! (TAPIO, PORTTI, ELAVA) into a unified format and forwards them to destinations
-//! (AHTI, OTEL, etc.).
+//! An open-source, format-agnostic event gateway that transforms and routes
+//! events from any gRPC source to any destination.
 //!
 //! # Architecture
 //!
@@ -10,7 +9,8 @@
 //! Input Plugins ──► Core (buffer, route) ──► Output Plugins
 //! ```
 //!
-//! Both inputs and outputs are pluggable via traits.
+//! Both inputs and outputs are pluggable via traits. Users provide their own
+//! plugins for source-specific transformations and destination forwarding.
 
 #![deny(unsafe_code)]
 #![warn(clippy::unwrap_used)]
@@ -20,38 +20,35 @@
 pub mod buffer;
 pub mod config;
 pub mod error;
+pub mod hub;
 pub mod input;
+pub mod message;
 pub mod metrics;
+pub mod middleware;
 pub mod output;
+pub mod registry;
 pub mod server;
 
-// Re-export proto types from central proto repo
+// Proto types generated from polku/v1/gateway.proto
 pub mod proto {
     #![allow(clippy::unwrap_used)]
     #![allow(clippy::expect_used)]
     #![allow(clippy::panic)]
     #![allow(clippy::derive_partial_eq_without_eq)]
 
-    /// AHTI event types (the unified event format)
-    pub mod ahti {
-        include!("proto/ahti.v1.rs");
-    }
-
-    /// POLKU gateway service types
-    pub mod polku {
-        include!("proto/polku.v1.rs");
-    }
+    include!("proto/polku.v1.rs");
 
     // Re-export commonly used types at proto level for convenience
-    pub use ahti::AhtiEvent as Event;
-    pub use ahti::*;
-    pub use polku::gateway_server;
-    pub use polku::Ack;
-    pub use polku::ComponentHealth;
-    pub use polku::EventBatch;
-    pub use polku::HealthRequest;
-    pub use polku::HealthResponse;
+    pub use gateway_server::Gateway;
+    pub use gateway_server::GatewayServer;
 }
 
 pub use config::Config;
-pub use error::{PolkuError, Result};
+pub use error::{PluginError, PolkuError, Result};
+pub use hub::{Hub, HubRunner, MessageSender};
+pub use input::{Input, InputContext};
+pub use message::Message;
+pub use middleware::{Filter, Middleware, MiddlewareChain, PassThrough, Transform};
+pub use output::{Output, StdoutOutput};
+pub use proto::Event;
+pub use registry::PluginRegistry;

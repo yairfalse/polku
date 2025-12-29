@@ -1,27 +1,27 @@
-//! Ring buffer for event buffering with backpressure support
+//! Ring buffer for message buffering with backpressure support
 
-use crate::proto::Event;
+use crate::message::Message;
 use parking_lot::Mutex;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// Thread-safe ring buffer for events
+/// Thread-safe ring buffer for messages
 ///
-/// When full, oldest events are dropped (FIFO eviction).
+/// When full, oldest messages are dropped (FIFO eviction).
 /// Provides metrics for monitoring buffer state.
 pub struct RingBuffer {
-    events: Mutex<VecDeque<Event>>,
+    messages: Mutex<VecDeque<Message>>,
     capacity: usize,
     metrics: BufferMetrics,
 }
 
 /// Metrics for buffer monitoring
 pub struct BufferMetrics {
-    /// Total events pushed
+    /// Total messages pushed
     pub pushed: AtomicU64,
-    /// Total events dropped due to full buffer
+    /// Total messages dropped due to full buffer
     pub dropped: AtomicU64,
-    /// Total events drained
+    /// Total messages drained
     pub drained: AtomicU64,
 }
 
@@ -39,26 +39,26 @@ impl RingBuffer {
     /// Create a new ring buffer with the given capacity
     pub fn new(capacity: usize) -> Self {
         Self {
-            events: Mutex::new(VecDeque::with_capacity(capacity)),
+            messages: Mutex::new(VecDeque::with_capacity(capacity)),
             capacity,
             metrics: BufferMetrics::default(),
         }
     }
 
-    /// Push events into the buffer
+    /// Push messages into the buffer
     ///
-    /// Returns the number of events dropped due to capacity limits.
-    pub fn push(&self, events: Vec<Event>) -> usize {
-        let mut buffer = self.events.lock();
+    /// Returns the number of messages dropped due to capacity limits.
+    pub fn push(&self, messages: Vec<Message>) -> usize {
+        let mut buffer = self.messages.lock();
         let mut dropped = 0;
 
-        for event in events {
+        for msg in messages {
             if buffer.len() >= self.capacity {
-                // Drop oldest event (FIFO eviction)
+                // Drop oldest message (FIFO eviction)
                 buffer.pop_front();
                 dropped += 1;
             }
-            buffer.push_back(event);
+            buffer.push_back(msg);
         }
 
         self.metrics
@@ -71,34 +71,34 @@ impl RingBuffer {
         dropped
     }
 
-    /// Drain up to `n` events from the buffer
+    /// Drain up to `n` messages from the buffer
     ///
-    /// Returns the drained events in FIFO order.
-    pub fn drain(&self, n: usize) -> Vec<Event> {
-        let mut buffer = self.events.lock();
+    /// Returns the drained messages in FIFO order.
+    pub fn drain(&self, n: usize) -> Vec<Message> {
+        let mut buffer = self.messages.lock();
         let drain_count = n.min(buffer.len());
-        let events: Vec<Event> = buffer.drain(..drain_count).collect();
+        let messages: Vec<Message> = buffer.drain(..drain_count).collect();
 
         self.metrics
             .drained
-            .fetch_add(events.len() as u64, Ordering::Relaxed);
+            .fetch_add(messages.len() as u64, Ordering::Relaxed);
 
-        events
+        messages
     }
 
-    /// Get current number of events in buffer
+    /// Get current number of messages in buffer
     pub fn len(&self) -> usize {
-        self.events.lock().len()
+        self.messages.lock().len()
     }
 
     /// Check if buffer is empty
     pub fn is_empty(&self) -> bool {
-        self.events.lock().is_empty()
+        self.messages.lock().is_empty()
     }
 
     /// Check if buffer is at capacity
     pub fn is_full(&self) -> bool {
-        self.events.lock().len() >= self.capacity
+        self.messages.lock().len() >= self.capacity
     }
 
     /// Get buffer capacity
@@ -108,21 +108,21 @@ impl RingBuffer {
 
     /// Get current fill percentage (0.0 - 1.0)
     pub fn fill_ratio(&self) -> f64 {
-        let len = self.events.lock().len();
+        let len = self.messages.lock().len();
         len as f64 / self.capacity as f64
     }
 
-    /// Get total events pushed
+    /// Get total messages pushed
     pub fn total_pushed(&self) -> u64 {
         self.metrics.pushed.load(Ordering::Relaxed)
     }
 
-    /// Get total events dropped
+    /// Get total messages dropped
     pub fn total_dropped(&self) -> u64 {
         self.metrics.dropped.load(Ordering::Relaxed)
     }
 
-    /// Get total events drained
+    /// Get total messages drained
     pub fn total_drained(&self) -> u64 {
         self.metrics.drained.load(Ordering::Relaxed)
     }
@@ -131,32 +131,28 @@ impl RingBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use prost_types::Timestamp;
+    use bytes::Bytes;
 
-    fn make_event(id: &str) -> Event {
-        Event {
-            id: id.to_string(),
-            timestamp: Some(Timestamp::default()),
-            ..Default::default()
-        }
+    fn make_message(id: &str) -> Message {
+        Message::with_id(id, 0, "test", "test", Bytes::new())
     }
 
     #[test]
     fn test_push_and_drain() {
         let buffer = RingBuffer::new(10);
 
-        // Push 5 events
-        let events: Vec<Event> = (0..5).map(|i| make_event(&format!("event-{i}"))).collect();
-        let dropped = buffer.push(events);
+        // Push 5 messages
+        let messages: Vec<Message> = (0..5).map(|i| make_message(&format!("msg-{i}"))).collect();
+        let dropped = buffer.push(messages);
 
         assert_eq!(dropped, 0);
         assert_eq!(buffer.len(), 5);
 
-        // Drain 3 events
+        // Drain 3 messages
         let drained = buffer.drain(3);
         assert_eq!(drained.len(), 3);
-        assert_eq!(drained[0].id, "event-0");
-        assert_eq!(drained[2].id, "event-2");
+        assert_eq!(drained[0].id, "msg-0");
+        assert_eq!(drained[2].id, "msg-2");
         assert_eq!(buffer.len(), 2);
     }
 
@@ -164,26 +160,26 @@ mod tests {
     fn test_overflow_drops_oldest() {
         let buffer = RingBuffer::new(3);
 
-        // Push 5 events into a buffer of size 3
-        let events: Vec<Event> = (0..5).map(|i| make_event(&format!("event-{i}"))).collect();
-        let dropped = buffer.push(events);
+        // Push 5 messages into a buffer of size 3
+        let messages: Vec<Message> = (0..5).map(|i| make_message(&format!("msg-{i}"))).collect();
+        let dropped = buffer.push(messages);
 
-        assert_eq!(dropped, 2); // 2 events dropped
+        assert_eq!(dropped, 2); // 2 messages dropped
         assert_eq!(buffer.len(), 3);
 
-        // Should have events 2, 3, 4 (oldest 0, 1 dropped)
+        // Should have messages 2, 3, 4 (oldest 0, 1 dropped)
         let drained = buffer.drain(3);
-        assert_eq!(drained[0].id, "event-2");
-        assert_eq!(drained[1].id, "event-3");
-        assert_eq!(drained[2].id, "event-4");
+        assert_eq!(drained[0].id, "msg-2");
+        assert_eq!(drained[1].id, "msg-3");
+        assert_eq!(drained[2].id, "msg-4");
     }
 
     #[test]
     fn test_fill_ratio() {
         let buffer = RingBuffer::new(100);
 
-        let events: Vec<Event> = (0..50).map(|i| make_event(&format!("event-{i}"))).collect();
-        buffer.push(events);
+        let messages: Vec<Message> = (0..50).map(|i| make_message(&format!("msg-{i}"))).collect();
+        buffer.push(messages);
 
         assert!((buffer.fill_ratio() - 0.5).abs() < 0.01);
     }
@@ -192,9 +188,9 @@ mod tests {
     fn test_metrics() {
         let buffer = RingBuffer::new(5);
 
-        // Push 10 events (5 will be dropped)
-        let events: Vec<Event> = (0..10).map(|i| make_event(&format!("event-{i}"))).collect();
-        buffer.push(events);
+        // Push 10 messages (5 will be dropped)
+        let messages: Vec<Message> = (0..10).map(|i| make_message(&format!("msg-{i}"))).collect();
+        buffer.push(messages);
 
         assert_eq!(buffer.total_dropped(), 5);
 

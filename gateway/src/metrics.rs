@@ -2,7 +2,7 @@
 
 use crate::error::{PolkuError, Result};
 use prometheus::{
-    register_counter_vec, register_gauge, register_histogram_vec, CounterVec, Gauge, HistogramVec,
+    CounterVec, Gauge, HistogramVec, register_counter_vec, register_gauge, register_histogram_vec,
 };
 use std::sync::OnceLock;
 
@@ -82,8 +82,11 @@ impl Metrics {
             )
             .map_err(|e| PolkuError::Metrics(format!("processing_latency: {e}")))?,
 
-            active_streams: register_gauge!("polku_active_streams", "Number of active gRPC streams")
-                .map_err(|e| PolkuError::Metrics(format!("active_streams: {e}")))?,
+            active_streams: register_gauge!(
+                "polku_active_streams",
+                "Number of active gRPC streams"
+            )
+            .map_err(|e| PolkuError::Metrics(format!("active_streams: {e}")))?,
 
             plugin_health: register_gauge!(
                 "polku_plugin_health",

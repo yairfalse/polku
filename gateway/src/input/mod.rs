@@ -1,27 +1,54 @@
-//! Input plugin system for POLKU
+//! Input system for POLKU
 //!
-//! Input plugins transform raw bytes from various sources into unified Events.
+//! Inputs transform raw bytes from various sources into unified Events.
+//! Each source (e.g., "my-agent") registers an Input that knows how to
+//! deserialize that source's format.
 
 use crate::error::PluginError;
 use crate::proto::Event;
-use async_trait::async_trait;
 
-/// Input plugin trait - transforms raw bytes into Events
+/// Context for input transformation
+#[derive(Debug, Clone)]
+pub struct InputContext<'a> {
+    /// Source identifier (e.g., "my-agent", "otel-collector")
+    pub source: &'a str,
+    /// Cluster/environment identifier
+    pub cluster: &'a str,
+    /// Format hint (e.g., "protobuf", "json", "msgpack")
+    pub format: &'a str,
+}
+
+/// Input trait - transforms raw bytes into Events
 ///
-/// Each input plugin handles a specific source format (TAPIO, PORTTI, ELAVA, etc.)
-/// and transforms it into the unified Event format.
-#[async_trait]
-pub trait InputPlugin: Send + Sync {
-    /// Plugin name for identification and logging
+/// Each input handles a specific source format and transforms it
+/// into the unified Event format that POLKU uses internally.
+///
+/// # Example
+///
+/// ```ignore
+/// struct MyAgentInput;
+///
+/// impl Input for MyAgentInput {
+///     fn name(&self) -> &'static str { "my-agent" }
+///
+///     fn transform(&self, ctx: &InputContext, data: &[u8]) -> Result<Vec<Event>, PluginError> {
+///         // Deserialize your format and create Events
+///         let my_events: Vec<MyEvent> = deserialize(data)?;
+///         Ok(my_events.into_iter().map(|e| e.into_event()).collect())
+///     }
+/// }
+/// ```
+pub trait Input: Send + Sync {
+    /// Input name for identification and logging
     fn name(&self) -> &'static str;
 
-    /// Transform raw bytes from a source into Events
+    /// Transform raw bytes into Events
     ///
     /// # Arguments
-    /// * `source` - Source identifier (e.g., "tapio-node-1")
+    /// * `ctx` - Context with source, cluster, and format information
     /// * `data` - Raw bytes from the source
     ///
     /// # Returns
     /// Vector of Events or a PluginError
-    fn transform(&self, source: &str, data: &[u8]) -> Result<Vec<Event>, PluginError>;
+    fn transform(&self, ctx: &InputContext, data: &[u8]) -> Result<Vec<Event>, PluginError>;
 }

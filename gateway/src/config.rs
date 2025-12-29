@@ -98,7 +98,7 @@ impl Config {
                 other => {
                     return Err(PolkuError::Config(format!(
                         "invalid POLKU_LOG_FORMAT: {other} (expected 'json' or 'pretty')"
-                    )))
+                    )));
                 }
             };
         }
@@ -108,6 +108,7 @@ impl Config {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

@@ -1,47 +1,96 @@
-# POLKU: Pluggable gRPC Event Gateway
+# POLKU: Lightweight Internal Message Pipeline
 
-**POLKU = The path events take from edge to brain**
+**Decouple your internal services without a message broker**
 
 ---
 
 ## PROJECT NATURE
 
-**THIS IS A PLUGGABLE EVENT GATEWAY**
-- **Goal**: Transform and route events from edge agents to AHTI
+**THIS IS A MESSAGE PIPELINE, NOT AN API GATEWAY**
+
+- **Goal**: Transform, buffer, and route messages between internal services
 - **Language**: 100% Rust
-- **Status**: Phase 1 - Project setup
-- **Approach**: Plugin in, plugin out - both sides are traits
+- **Positioning**: For when Kafka is overkill but direct coupling is brittle
+- **NOT**: An API gateway (Envoy), a message broker (Kafka), or telemetry-specific (OTEL)
 
 ---
 
-## PROJECT MISSION
+## THE PITCH
 
-**Mission**: Build a high-performance gRPC gateway that transforms events from various sources into a unified format.
+```
+┌─────────────────────────────────────────────────────────────┐
+│                                                              │
+│  "I have internal services that need to talk,               │
+│   but Kafka is overkill and direct calls are brittle"       │
+│                                                              │
+│   Solution: POLKU                                            │
+│   • Single binary, 10-20MB RAM                               │
+│   • Zero ops (no Zookeeper, no cluster)                      │
+│   • Transform between formats                                │
+│   • Buffer during slowdowns                                  │
+│   • Fan-out to multiple destinations                         │
+│                                                              │
+└─────────────────────────────────────────────────────────────┘
+```
 
-**Core Value Proposition:**
+---
 
-**"The universal translator between your observability agents and AHTI"**
+## ARCHITECTURE
 
-**The Architecture:**
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                         POLKU                                │
 │                                                              │
-│  Input Plugins        Core              Output Plugins       │
-│  ┌──────────┐    ┌───────────┐        ┌──────────┐         │
-│  │  Tapio   │───►│ Transform │───────►│   AHTI   │         │
-│  │  Portti  │    │  Buffer   │        │   OTEL   │         │
-│  │  Elava   │    │  Route    │        │   File   │         │
-│  │  ...     │    └───────────┘        │   ...    │         │
-│  └──────────┘                         └──────────┘         │
+│  Inputs              Middleware           Outputs            │
+│  ┌──────────┐       ┌──────────┐        ┌──────────┐        │
+│  │ gRPC     │──────►│ Transform│───────►│ gRPC     │        │
+│  │ REST     │       │ Auth     │        │ Kafka    │        │
+│  │ Webhook  │       │ Route    │        │ S3       │        │
+│  └──────────┘       └──────────┘        └──────────┘        │
+│                          │                                   │
+│                     ┌────▼────┐                              │
+│                     │ Buffer  │                              │
+│                     │ (Ring)  │                              │
+│                     └─────────┘                              │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-**Key Design Principles:**
-- **Pluggable inputs** - Add new sources without changing core
-- **Pluggable outputs** - Add new destinations without changing core
-- **Backpressure** - Ring buffer with FIFO eviction
-- **No state** - Stateless transformation, state lives in AHTI
+### Core Types
+
+```rust
+// The universal message - protocol agnostic, zero-copy
+pub struct Message {
+    pub id: String,                        // ULID
+    pub timestamp: i64,                    // Unix nanos
+    pub source: String,                    // Origin
+    pub message_type: String,              // User-defined
+    pub metadata: HashMap<String, String>, // Headers
+    pub payload: Bytes,                    // Zero-copy payload
+    pub route_to: Vec<String>,             // Output hints
+}
+
+// Input: receive from any protocol
+#[async_trait]
+pub trait Input: Send + Sync {
+    fn name(&self) -> &'static str;
+    async fn run(&self, tx: Sender<Message>) -> Result<(), Error>;
+}
+
+// Output: send to any destination
+#[async_trait]
+pub trait Output: Send + Sync {
+    fn name(&self) -> &'static str;
+    async fn send(&self, messages: &[Message]) -> Result<(), Error>;
+    async fn health(&self) -> bool;
+}
+
+// Middleware: transform, filter, route
+#[async_trait]
+pub trait Middleware: Send + Sync {
+    fn name(&self) -> &'static str;
+    async fn process(&self, msg: Message) -> Option<Message>;
+}
+```
 
 ---
 
@@ -52,111 +101,51 @@
 1. **No `.unwrap()` in production** - Use `?` or proper error handling
 2. **No `println!`** - Use `tracing::{info, warn, error, debug}`
 3. **No TODOs or stubs** - Complete implementations only
+4. **Use `Bytes` for payloads** - Zero-copy, reference counted
 
-### Error Handling Pattern
+### Error Handling
 
 ```rust
 // BAD
-let event = batch.events.first().unwrap();
+let msg = batch.messages.first().unwrap();
 
 // GOOD
-let event = batch.events.first()
-    .ok_or(PolkuError::EmptyBatch)?;
+let msg = batch.messages.first()
+    .ok_or(Error::EmptyBatch)?;
 ```
 
-### Tracing Pattern
+### Zero-Copy with Bytes
 
 ```rust
-// BAD
-println!("Processing {} events", count);
+// BAD: cloning data
+let data: Vec<u8> = input.read_all();
+let copy = data.clone();  // Expensive!
 
-// GOOD
-info!(count = %count, source = %source, "Processing event batch");
-warn!(error = ?e, "Failed to forward to AHTI (will retry)");
-error!(error = ?e, "Plugin initialization failed");
+// GOOD: zero-copy
+let data: Bytes = input.read_all();
+let reference = data.clone();  // Just increments refcount
 ```
 
 ---
 
 ## TDD WORKFLOW
 
-**RED → GREEN → REFACTOR** - Always.
-
-### RED: Write Failing Test First
+**RED → GREEN → REFACTOR**
 
 ```rust
 #[tokio::test]
-async fn test_buffer_drops_oldest_on_overflow() {
-    let buffer = RingBuffer::new(3);
+async fn test_middleware_transforms_message() {
+    let middleware = TransformMiddleware::new(|msg| {
+        msg.metadata.insert("processed".into(), "true".into());
+        msg
+    });
 
-    // Push 5 events into buffer of size 3
-    let events = (0..5).map(|i| make_event(&format!("e{i}"))).collect();
-    let dropped = buffer.push(events);
+    let msg = Message::new("test", Bytes::from("payload"));
+    let result = middleware.process(msg).await;
 
-    assert_eq!(dropped, 2);
-    assert_eq!(buffer.len(), 3);
+    assert!(result.is_some());
+    assert_eq!(result.unwrap().metadata.get("processed"), Some(&"true".into()));
 }
-```
-
-### GREEN: Minimal Implementation
-
-Write just enough code to make the test pass. No more.
-
-### REFACTOR: Clean Up
-
-Extract helpers, improve naming, add edge cases. Tests must still pass.
-
----
-
-## KEY PATTERNS
-
-### Plugin Traits
-
-```rust
-// Input plugin - transforms raw bytes to Events
-#[async_trait]
-pub trait InputPlugin: Send + Sync {
-    fn name(&self) -> &'static str;
-    fn transform(&self, source: &str, data: &[u8]) -> Result<Vec<Event>, PluginError>;
-}
-
-// Output plugin - sends Events to destination
-#[async_trait]
-pub trait OutputPlugin: Send + Sync {
-    fn name(&self) -> &'static str;
-    async fn send(&self, events: &[Event]) -> Result<(), PluginError>;
-    async fn health(&self) -> bool;
-}
-```
-
-### Ring Buffer for Backpressure
-
-```rust
-impl RingBuffer {
-    pub fn push(&self, events: Vec<Event>) -> usize; // returns dropped count
-    pub fn drain(&self, n: usize) -> Vec<Event>;
-    pub fn len(&self) -> usize;
-}
-```
-
----
-
-## VERIFICATION CHECKLIST
-
-Before every commit:
-
-```bash
-# Format
-cargo fmt
-
-# Lint
-cargo clippy -- -D warnings
-
-# Tests
-cargo test
-
-# No unwrap in production
-grep -r "\.unwrap()" src/ --include="*.rs" | grep -v "#\[test\]" | grep -v "#\[cfg(test)\]"
 ```
 
 ---
@@ -165,13 +154,41 @@ grep -r "\.unwrap()" src/ --include="*.rs" | grep -v "#\[test\]" | grep -v "#\[c
 
 | What | Where |
 |------|-------|
-| Main entry point | `gateway/src/main.rs` |
-| gRPC server | `gateway/src/server.rs` |
+| Entry point | `gateway/src/main.rs` |
+| Message type | `gateway/src/message.rs` |
+| Hub builder | `gateway/src/hub.rs` |
 | Ring buffer | `gateway/src/buffer.rs` |
-| Input plugin trait | `gateway/src/input/mod.rs` |
-| Output plugin trait | `gateway/src/output/mod.rs` |
-| Tapio adapter | `gateway/src/input/tapio.rs` |
-| AHTI output | `gateway/src/output/ahti.rs` |
+| Input trait | `gateway/src/input/mod.rs` |
+| Output trait | `gateway/src/output/mod.rs` |
+| Middleware trait | `gateway/src/middleware/mod.rs` |
+| gRPC input | `gateway/src/input/grpc.rs` |
+| Stdout output | `gateway/src/output/stdout.rs` |
+
+---
+
+## PHASE 2 IMPLEMENTATION
+
+Current task: Generalize from Event to Message
+
+### Changes Required
+
+1. **Create `message.rs`** - Generic Message with Bytes payload
+2. **Update `buffer.rs`** - Use Message instead of Event
+3. **Create `middleware/mod.rs`** - Middleware trait
+4. **Create `hub.rs`** - Builder pattern for pipeline setup
+5. **Rename traits** - InputPlugin → Input, OutputPlugin → Output
+6. **Update proto** - Simplify to generic envelope
+
+### Builder API Goal
+
+```rust
+Hub::new()
+    .input(GrpcInput::new("[::]:50051"))
+    .middleware(Transform::new(|msg| { ... }))
+    .output("backend", GrpcOutput::new("backend:50051"))
+    .run()
+    .await
+```
 
 ---
 
@@ -181,43 +198,47 @@ grep -r "\.unwrap()" src/ --include="*.rs" | grep -v "#\[test\]" | grep -v "#\[c
 |-------|---------|
 | `tonic` | gRPC server/client |
 | `prost` | Protobuf serialization |
+| `bytes` | Zero-copy buffers |
 | `tokio` | Async runtime |
 | `tracing` | Structured logging |
-| `prometheus` | Metrics |
+| `parking_lot` | Fast mutex |
 | `thiserror` | Error types |
-| `parking_lot` | Fast mutex for buffer |
+| `async-trait` | Async trait support |
 
 ---
 
-## PROTO ARCHITECTURE
+## VERIFICATION
 
-POLKU imports protos from central repo:
+Before every commit:
 
+```bash
+cargo fmt
+cargo clippy -- -D warnings
+cargo test
 ```
-falsesystems/proto/           # Central proto repo
-├── tapio/v1/raw.proto        # TAPIO → POLKU
-├── portti/v1/raw.proto       # PORTTI → POLKU
-├── ahti/v1/events.proto      # POLKU → AHTI (AhtiEvent)
-└── polku/v1/gateway.proto    # POLKU service definition
-```
-
-POLKU transforms between schemas:
-- `tapio::RawEbpfEvent` → `ahti::AhtiEvent`
-- `portti::RawK8sEvent` → `ahti::AhtiEvent`
-- `elava::RawCloudEvent` → `ahti::AhtiEvent`
 
 ---
 
 ## AGENT INSTRUCTIONS
 
-When working on this codebase:
-
-1. **Read first** - Understand existing patterns before changing
+1. **Read first** - Understand existing patterns
 2. **TDD always** - Write failing test, implement, refactor
-3. **Plugins are traits** - Both input and output are pluggable
-4. **No state** - POLKU is stateless, AHTI has the graph
+3. **Use Bytes** - Zero-copy for all payloads
+4. **No YAML** - Programmatic configuration via Builder
 5. **Run checks** - `cargo fmt && cargo clippy && cargo test`
 
 ---
 
-**False Systems** 🇫🇮
+## POSITIONING REMINDER
+
+**POLKU is NOT:**
+- An API gateway (use Envoy/Kong)
+- A message broker (use Kafka/NATS)
+- A service mesh (use Istio/Linkerd)
+- Telemetry-specific (use OTEL Collector)
+
+**POLKU IS:**
+- A lightweight internal message pipeline
+- For decoupling without infrastructure tax
+- When Kafka is overkill
+- Single binary, zero ops
