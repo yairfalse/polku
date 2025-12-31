@@ -180,16 +180,14 @@ impl Emitter for WebhookEmitter {
         // HEAD is less invasive than GET for POST-only endpoints
         match self.client.head(url).send().await {
             Ok(response) => {
-                // Any response (even 4xx) means server is reachable
-                // Only connection errors indicate unhealthy
-                let healthy = response.status().is_success()
-                    || response.status().is_client_error()
-                    || response.status().is_redirection();
+                let status = response.status();
+                // Treat successful responses as healthy, and allow 405 for POST-only endpoints
+                let healthy = status.is_success() || status.as_u16() == 405;
                 if !healthy {
                     debug!(
                         url = %url,
-                        status = %response.status(),
-                        "Health check returned server error"
+                        status = %status,
+                        "Health check returned unhealthy status"
                     );
                 }
                 healthy
