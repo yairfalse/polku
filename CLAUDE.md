@@ -221,6 +221,6 @@ cargo test
 |--------|-----|
 | **Programmable** | Routing logic is Rust code, not config |
 | **Full language** | if/else, loops, custom transforms |
-| **Zero ops** | No clusters, no external dependencies |
+| **Zero ops** | No clusters, no external services |
 | **Lightweight** | 10-20MB footprint |
 | **Type-safe** | Compiler catches plugin errors |

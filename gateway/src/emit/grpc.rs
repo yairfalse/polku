@@ -14,9 +14,16 @@ use crate::error::PluginError;
 use crate::proto::gateway_client::GatewayClient;
 use crate::proto::{Event, HealthRequest, IngestEvent, ingest_event};
 use async_trait::async_trait;
+use std::time::Duration;
 use tokio::sync::Mutex;
-use tonic::transport::Channel;
+use tonic::transport::{Channel, Endpoint};
 use tracing::{debug, error};
+
+/// Default connect timeout (10 seconds)
+const DEFAULT_CONNECT_TIMEOUT_SECS: u64 = 10;
+
+/// Default request timeout (30 seconds)
+const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 30;
 
 /// gRPC emitter that forwards events to another POLKU Gateway
 pub struct GrpcEmitter {
@@ -29,21 +36,30 @@ pub struct GrpcEmitter {
 impl GrpcEmitter {
     /// Create a new GrpcEmitter connected to the given endpoint
     ///
+    /// Uses default timeouts: 10s connect, 30s request.
+    ///
     /// # Arguments
     /// * `endpoint` - The gRPC endpoint URL (e.g., "http://localhost:50051")
     pub async fn new(endpoint: impl Into<String>) -> Result<Self, PluginError> {
-        let endpoint = endpoint.into();
-        let client = GatewayClient::connect(endpoint.clone())
+        let endpoint_str = endpoint.into();
+
+        let channel = Endpoint::from_shared(endpoint_str.clone())
+            .map_err(|e| PluginError::Init(format!("Invalid endpoint URL: {}", e)))?
+            .connect_timeout(Duration::from_secs(DEFAULT_CONNECT_TIMEOUT_SECS))
+            .timeout(Duration::from_secs(DEFAULT_REQUEST_TIMEOUT_SECS))
+            .connect()
             .await
             .map_err(|e| {
-                PluginError::Connection(format!("Failed to connect to {}: {}", endpoint, e))
+                PluginError::Connection(format!("Failed to connect to {}: {}", endpoint_str, e))
             })?;
 
-        debug!(endpoint = %endpoint, "gRPC emitter connected");
+        let client = GatewayClient::new(channel);
+
+        debug!(endpoint = %endpoint_str, "gRPC emitter connected");
 
         Ok(Self {
             client: Mutex::new(client),
-            endpoint,
+            endpoint: endpoint_str,
         })
     }
 }

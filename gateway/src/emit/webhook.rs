@@ -39,7 +39,10 @@ struct EventJson {
     route_to: Vec<String>,
 }
 
-/// Base64 encoding for binary payload
+/// Base64 encoding for binary payload (serialization only).
+///
+/// Intentionally one-way: webhooks emit JSON payloads but never receive them.
+/// Receivers should decode the base64 payload on their end.
 mod base64_bytes {
     use base64::{Engine, engine::general_purpose::STANDARD};
     use serde::Serializer;
@@ -386,17 +389,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_webhook_emitter_timeout_on_slow_server() {
-        // Create a server that accepts connection but never responds
+    async fn test_webhook_emitter_connection_reset() {
+        // Create a server that accepts connection but immediately drops it
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
 
-        // Spawn a task that accepts connections but never responds
+        // Spawn a task that accepts connections then drops them (connection reset)
         tokio::spawn(async move {
             while let Ok((socket, _)) = listener.accept().await {
-                // Accept the connection and immediately drop it without responding.
-                // This simulates a non-responsive server without holding the connection
-                // open for an extended period, avoiding resource leaks in the test.
+                // Drop immediately - causes connection reset, not timeout
                 drop(socket);
             }
         });
@@ -405,20 +406,16 @@ mod tests {
         let emitter = WebhookEmitter::new(&url).unwrap();
         let events = vec![make_event("e1", "test")];
 
-        // Should timeout within our configured timeout (not hang for 60s)
+        // Should fail fast on connection reset (not hang)
         let start = std::time::Instant::now();
         let result = emitter.emit(&events).await;
         let elapsed = start.elapsed();
 
-        assert!(result.is_err(), "Should fail on timeout");
-        // Verify that the timeout is close to the configured 30s timeout.
-        let lower = Duration::from_secs(28);
-        let upper = Duration::from_secs(32);
+        assert!(result.is_err(), "Should fail on connection reset");
+        // Connection reset should be fast, not a 30s timeout
         assert!(
-            elapsed >= lower && elapsed <= upper,
-            "Expected timeout between {:?} and {:?}, but took {:?}",
-            lower,
-            upper,
+            elapsed < Duration::from_secs(5),
+            "Connection reset should be fast, took {:?}",
             elapsed
         );
     }
