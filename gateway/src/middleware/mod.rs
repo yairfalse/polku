@@ -202,6 +202,15 @@ where
     }
 }
 
+mod router;
+pub use router::Router;
+mod rate_limiter;
+pub use rate_limiter::RateLimiter;
+mod dedup;
+pub use dedup::Deduplicator;
+mod sampler;
+pub use sampler::Sampler;
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {

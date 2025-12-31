@@ -40,14 +40,6 @@ POLKU is an **infrastructure library** for internal event routing. Services and 
 
 ---
 
-## Why POLKU?
-
-| Feature | Benefit |
-|---------|---------|
-| **Rust code config** | Full language power - if/else, loops, custom logic |
-| **Zero ops** | No clusters, no config files to manage |
-| **10-20MB footprint** | Embed in your service or run as sidecar |
-| **Type-safe plugins** | Compiler catches errors, not production |
 
 ---
 
