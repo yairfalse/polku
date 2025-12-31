@@ -151,15 +151,25 @@ impl Emitter for WebhookEmitter {
                 } else {
                     let status = response.status();
                     let body = response.text().await.unwrap_or_default();
+                    let truncated_body: String = {
+                        const MAX_CHARS: usize = 200;
+                        if body.chars().count() > MAX_CHARS {
+                            let prefix: String = body.chars().take(MAX_CHARS).collect();
+                            let total_chars = body.chars().count();
+                            format!("{prefix}...[truncated; {total_chars} chars total]")
+                        } else {
+                            body.clone()
+                        }
+                    };
                     error!(
                         url = %self.url,
                         status = %status,
-                        body = %body,
+                        body = %truncated_body,
                         "Webhook request failed"
                     );
                     Err(PluginError::Send(format!(
                         "Webhook returned {}: {}",
-                        status, body
+                        status, truncated_body
                     )))
                 }
             }
