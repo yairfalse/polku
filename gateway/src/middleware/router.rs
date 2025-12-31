@@ -6,8 +6,10 @@
 use crate::message::Message;
 use crate::middleware::Middleware;
 use async_trait::async_trait;
+use std::sync::Arc;
 
-/// Type alias for routing rule function
+/// Type alias for routing rule function.
+/// Returns owned targets when matched (required by Message.route_to: Vec<String>).
 type RuleFn = Box<dyn Fn(&Message) -> Option<Vec<String>> + Send + Sync>;
 
 /// Content-based router
@@ -27,14 +29,19 @@ impl Router {
     /// Add a routing rule
     ///
     /// Rules are evaluated in order. First match wins.
+    ///
+    /// Note: targets are cloned on each match because Message.route_to requires Vec<String>.
+    /// Arc is used internally to enable sharing if same targets used across rules.
     pub fn rule<F>(mut self, matcher: F, targets: Vec<String>) -> Self
     where
         F: Fn(&Message) -> bool + Send + Sync + 'static,
     {
-        let targets_clone = targets;
+        // Wrap in Arc for potential sharing; still need to clone Vec on match
+        // because Message.route_to is Vec<String>, not Arc<Vec<String>>
+        let targets = Arc::new(targets);
         self.rules.push(Box::new(move |msg| {
             if matcher(msg) {
-                Some(targets_clone.clone())
+                Some((*targets).clone())
             } else {
                 None
             }
