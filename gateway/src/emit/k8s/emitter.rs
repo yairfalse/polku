@@ -98,9 +98,37 @@ impl K8sEmitter {
         Self::with_config(client, K8sEmitterConfig::default())
     }
 
+    /// Sanitize name to be K8s DNS subdomain compatible.
+    ///
+    /// K8s resource names must: be lowercase alphanumeric or '-',
+    /// start/end with alphanumeric, max 253 chars.
+    fn sanitize_name(raw: &str) -> String {
+        let sanitized: String = raw
+            .chars()
+            .map(|c| {
+                let lc = c.to_ascii_lowercase();
+                if lc.is_ascii_lowercase() || lc.is_ascii_digit() || lc == '-' {
+                    lc
+                } else {
+                    '-'
+                }
+            })
+            .collect();
+
+        // Trim leading/trailing dashes, truncate to 253 chars
+        let trimmed = sanitized.trim_matches('-');
+        if trimmed.is_empty() {
+            "event".to_string()
+        } else if trimmed.len() > 253 {
+            trimmed[..253].trim_end_matches('-').to_string()
+        } else {
+            trimmed.to_string()
+        }
+    }
+
     /// Create ConfigMap from event
     fn event_to_configmap(&self, event: &Event) -> ConfigMap {
-        let name = format!("{}-{}", self.config.name_prefix, &event.id);
+        let name = Self::sanitize_name(&format!("{}-{}", self.config.name_prefix, &event.id));
 
         let mut data = BTreeMap::new();
         data.insert("event_id".into(), event.id.clone());
@@ -150,7 +178,12 @@ impl Emitter for K8sEmitter {
             self.api
                 .create(&PostParams::default(), &cm)
                 .await
-                .map_err(|e| PluginError::Send(format!("K8s create {name}: {e}")))?;
+                .map_err(|e| {
+                    PluginError::Send(format!(
+                        "K8s create {name} for event {}: {e}",
+                        event.id
+                    ))
+                })?;
 
             tracing::debug!(
                 resource = "ConfigMap",
@@ -203,5 +236,27 @@ mod tests {
     fn test_resource_kind_default() {
         let kind = ResourceKind::default();
         assert!(matches!(kind, ResourceKind::ConfigMap));
+    }
+
+    #[test]
+    fn test_sanitize_name() {
+        // Basic case
+        assert_eq!(K8sEmitter::sanitize_name("polku-event-abc123"), "polku-event-abc123");
+
+        // Uppercase → lowercase
+        assert_eq!(K8sEmitter::sanitize_name("Polku-Event-ABC"), "polku-event-abc");
+
+        // Invalid chars → dash
+        assert_eq!(K8sEmitter::sanitize_name("event_id@123"), "event-id-123");
+
+        // Trim leading/trailing dashes
+        assert_eq!(K8sEmitter::sanitize_name("---event---"), "event");
+
+        // Empty → fallback
+        assert_eq!(K8sEmitter::sanitize_name("___"), "event");
+
+        // Long name truncated
+        let long_name = "a".repeat(300);
+        assert!(K8sEmitter::sanitize_name(&long_name).len() <= 253);
     }
 }

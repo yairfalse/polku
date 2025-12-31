@@ -14,10 +14,13 @@
 //!
 //! ```ignore
 //! use polku_gateway::{Hub, K8sEmitter};
-//! use seppo::Context;
 //!
-//! let ctx = Context::new().await?;
-//! let emitter = K8sEmitter::new(ctx).await?;
+//! // Option 1: Use default kubeconfig
+//! let emitter = K8sEmitter::new().await?;
+//!
+//! // Option 2: Use Seppo context
+//! // let ctx = seppo::Context::new().await?;
+//! // let emitter = K8sEmitter::from_seppo(&ctx)?;
 //!
 //! Hub::new()
 //!     .emitter(emitter)

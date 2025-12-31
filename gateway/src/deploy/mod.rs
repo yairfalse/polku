@@ -71,9 +71,9 @@ impl PolkuDeployment {
         self
     }
 
-    /// Set replica count
+    /// Set replica count (must be >= 0)
     pub fn replicas(mut self, n: i32) -> Self {
-        self.replicas = n;
+        self.replicas = n.max(0);
         self
     }
 
