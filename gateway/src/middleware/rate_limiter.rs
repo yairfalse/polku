@@ -11,12 +11,13 @@ use std::time::Instant;
 
 /// Token bucket rate limiter
 ///
-/// Allows `capacity` messages per `refill_interval`.
+/// Allows `rate` messages per second with a burst capacity of `burst` messages.
+/// Implemented as a continuously refilling token bucket.
 /// Thread-safe using atomics - no locks on hot path.
 pub struct RateLimiter {
     /// Max tokens in bucket
     capacity: u64,
-    /// Tokens added per refill
+    /// Tokens added per refill interval
     refill_amount: u64,
     /// Nanoseconds between refills
     refill_nanos: u64,
@@ -32,8 +33,8 @@ impl RateLimiter {
     /// Create a new rate limiter
     ///
     /// # Arguments
-    /// * `rate` - Messages per second allowed
-    /// * `burst` - Max burst size (bucket capacity)
+    /// * `rate` - Messages per second allowed (0 = no refill)
+    /// * `burst` - Max burst size (bucket capacity). If 0, no messages allowed.
     pub fn new(rate: u64, burst: u64) -> Self {
         let refill_nanos = if rate == 0 {
             u64::MAX
@@ -41,11 +42,14 @@ impl RateLimiter {
             1_000_000_000 / rate
         };
 
+        // Use saturating mul to prevent overflow with large burst values
+        let scaled_burst = burst.saturating_mul(1000);
+
         Self {
-            capacity: burst * 1000, // Scale for precision
-            refill_amount: 1000,    // 1 token scaled
+            capacity: scaled_burst,
+            refill_amount: 1000, // 1 token scaled
             refill_nanos,
-            tokens: AtomicU64::new(burst * 1000),
+            tokens: AtomicU64::new(scaled_burst),
             last_refill: AtomicU64::new(0),
             start: Instant::now(),
         }
@@ -58,7 +62,7 @@ impl RateLimiter {
         self.refill();
 
         loop {
-            let current = self.tokens.load(Ordering::Relaxed);
+            let current = self.tokens.load(Ordering::Acquire);
             if current < 1000 {
                 return false; // Not enough tokens
             }
@@ -66,12 +70,7 @@ impl RateLimiter {
             // Try to consume 1 token (1000 scaled)
             if self
                 .tokens
-                .compare_exchange_weak(
-                    current,
-                    current - 1000,
-                    Ordering::Relaxed,
-                    Ordering::Relaxed,
-                )
+                .compare_exchange_weak(current, current - 1000, Ordering::AcqRel, Ordering::Acquire)
                 .is_ok()
             {
                 return true;
@@ -81,40 +80,67 @@ impl RateLimiter {
     }
 
     /// Refill tokens based on elapsed time
+    ///
+    /// Uses CAS loop to ensure only one thread adds tokens for a given time interval.
     fn refill(&self) {
         let now_nanos = self.start.elapsed().as_nanos() as u64;
-        let last = self.last_refill.load(Ordering::Relaxed);
-        let elapsed = now_nanos.saturating_sub(last);
 
-        if elapsed < self.refill_nanos {
-            return; // Not time to refill yet
-        }
-
-        // Calculate tokens to add
-        let tokens_to_add = (elapsed / self.refill_nanos) * self.refill_amount;
-        if tokens_to_add == 0 {
-            return;
-        }
-
-        // Update last refill time
-        let new_last = last + (elapsed / self.refill_nanos) * self.refill_nanos;
-        let _ =
-            self.last_refill
-                .compare_exchange(last, new_last, Ordering::Relaxed, Ordering::Relaxed);
-
-        // Add tokens (capped at capacity)
         loop {
-            let current = self.tokens.load(Ordering::Relaxed);
-            let new_tokens = (current + tokens_to_add).min(self.capacity);
-            if current == new_tokens {
-                break;
+            let last = self.last_refill.load(Ordering::Acquire);
+            let elapsed = now_nanos.saturating_sub(last);
+
+            if elapsed < self.refill_nanos {
+                return; // Not time to refill yet
             }
-            if self
-                .tokens
-                .compare_exchange_weak(current, new_tokens, Ordering::Relaxed, Ordering::Relaxed)
-                .is_ok()
-            {
-                break;
+
+            let intervals = elapsed / self.refill_nanos;
+            if intervals == 0 {
+                return;
+            }
+
+            // Compute the new last refill time
+            let new_last = last + intervals * self.refill_nanos;
+
+            // Try to claim this time interval
+            match self.last_refill.compare_exchange_weak(
+                last,
+                new_last,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    // We won the race - add tokens for these intervals
+                    let tokens_to_add = intervals * self.refill_amount;
+                    if tokens_to_add == 0 {
+                        return;
+                    }
+
+                    // Add tokens (capped at capacity)
+                    loop {
+                        let current = self.tokens.load(Ordering::Acquire);
+                        let new_tokens = (current.saturating_add(tokens_to_add)).min(self.capacity);
+                        if current == new_tokens {
+                            break;
+                        }
+                        if self
+                            .tokens
+                            .compare_exchange_weak(
+                                current,
+                                new_tokens,
+                                Ordering::AcqRel,
+                                Ordering::Acquire,
+                            )
+                            .is_ok()
+                        {
+                            break;
+                        }
+                    }
+                    return;
+                }
+                Err(_) => {
+                    // Another thread updated last_refill; retry with new value
+                    continue;
+                }
             }
         }
     }
@@ -197,7 +223,8 @@ mod tests {
         use std::sync::Arc;
         use std::thread;
 
-        let limiter = Arc::new(RateLimiter::new(10000, 100));
+        // Use rate=0 (no refill) for deterministic test
+        let limiter = Arc::new(RateLimiter::new(0, 100));
         let mut handles = vec![];
 
         // Spawn threads to compete for tokens
@@ -215,7 +242,13 @@ mod tests {
         }
 
         let total: u32 = handles.into_iter().map(|h| h.join().unwrap()).sum();
-        // Should have acquired close to burst (100) tokens
-        assert!(total >= 90 && total <= 110, "acquired: {}", total);
+        // With no refill, should acquire exactly 100 tokens (the burst)
+        assert_eq!(total, 100, "expected exactly 100, acquired: {}", total);
+    }
+
+    #[test]
+    fn test_zero_burst_blocks_all() {
+        let limiter = RateLimiter::new(1000, 0);
+        assert!(!limiter.try_acquire());
     }
 }
