@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// Probabilistic sampler
 ///
 /// Samples messages with given probability (0.0 to 1.0).
-/// Thread-safe using atomic xorshift PRNG.
+/// Thread-safe using atomic xorshift64 PRNG.
 pub struct Sampler {
     /// Threshold for sampling (0 = none, u64::MAX = all)
     threshold: u64,
@@ -27,6 +27,11 @@ impl Sampler {
     ///
     /// # Panics
     /// Panics if rate is not in [0.0, 1.0]
+    ///
+    /// # Note
+    /// Seed is derived from system time. If system clock is before UNIX_EPOCH
+    /// (misconfigured), falls back to a fixed seed. Use `with_seed` for
+    /// deterministic behavior in tests.
     pub fn new(rate: f64) -> Self {
         assert!(
             (0.0..=1.0).contains(&rate),
@@ -40,15 +45,15 @@ impl Sampler {
             (rate * u64::MAX as f64) as u64
         };
 
-        // Seed from system time
+        // Seed from system time (fallback to fixed seed if clock is misconfigured)
         let seed = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos() as u64)
-            .unwrap_or(12345);
+            .unwrap_or(0xDEADBEEF);
 
         Self {
             threshold,
-            state: AtomicU64::new(seed | 1), // Ensure non-zero
+            state: AtomicU64::new(seed | 1), // Ensure non-zero for xorshift
         }
     }
 
@@ -60,22 +65,29 @@ impl Sampler {
     }
 
     /// Generate next random number (xorshift64)
+    ///
+    /// Lock-free CAS loop. Under high contention, threads may retry
+    /// but progress is always made (lock-free guarantee).
     fn next_random(&self) -> u64 {
         loop {
-            let mut x = self.state.load(Ordering::Relaxed);
+            // Load current state ONCE
+            let old = self.state.load(Ordering::Acquire);
+
+            // Compute next state from the loaded value
+            let mut x = old;
             x ^= x << 13;
             x ^= x >> 7;
             x ^= x << 17;
 
-            // CAS to update state
-            let old = self.state.load(Ordering::Relaxed);
+            // CAS: if state unchanged, update it; otherwise retry
             if self
                 .state
-                .compare_exchange_weak(old, x, Ordering::Relaxed, Ordering::Relaxed)
+                .compare_exchange_weak(old, x, Ordering::AcqRel, Ordering::Acquire)
                 .is_ok()
             {
                 return x;
             }
+            // Another thread updated state; loop will reload and retry
         }
     }
 
