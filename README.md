@@ -5,13 +5,18 @@
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org)
 
-Logic IS code. For when Envoy is overkill.
+Logic IS code. Internal event routing as a library.
 
 ---
 
 ## What is POLKU?
 
-POLKU is an **infrastructure library** for internal service communication. You write Rust code to define how messages flow - no YAML, no config files.
+POLKU is an **infrastructure library** for internal event routing. Services and agents send events to the hub; the hub transforms, filters, and fans out to destinations.
+
+- **Event-driven**: Fire-and-forget with buffering, not request/response
+- **Programmable**: Routing logic is Rust code, not config files
+- **Embeddable**: Import as a crate or run standalone
+- **Lightweight**: 10-20MB footprint, zero external dependencies
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -37,12 +42,12 @@ POLKU is an **infrastructure library** for internal service communication. You w
 
 ## Why POLKU?
 
-| | Envoy/Istio | Kafka | POLKU |
-|---|---|---|---|
-| Config | 1000s lines YAML | Properties | **Rust code** |
-| Logic | C++ filters | Consumer groups | **Full language** |
-| Ops | Complex | Zookeeper | **Zero** |
-| Memory | 50-100MB+ | JVM GB | **10-20MB** |
+| Feature | Benefit |
+|---------|---------|
+| **Rust code config** | Full language power - if/else, loops, custom logic |
+| **Zero ops** | No clusters, no config files to manage |
+| **10-20MB footprint** | Embed in your service or run as sidecar |
+| **Type-safe plugins** | Compiler catches errors, not production |
 
 ---
 
