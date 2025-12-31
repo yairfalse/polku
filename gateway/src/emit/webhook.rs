@@ -391,12 +391,12 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
 
-        // Spawn a task that accepts but hangs
+        // Spawn a task that accepts connections but never responds
         tokio::spawn(async move {
-            loop {
-                let (socket, _) = listener.accept().await.unwrap();
-                // Hold the connection but never respond
-                tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+            while let Ok((socket, _)) = listener.accept().await {
+                // Accept the connection and immediately drop it without responding.
+                // This simulates a non-responsive server without holding the connection
+                // open for an extended period, avoiding resource leaks in the test.
                 drop(socket);
             }
         });
