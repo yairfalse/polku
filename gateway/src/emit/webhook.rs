@@ -411,9 +411,14 @@ mod tests {
         let elapsed = start.elapsed();
 
         assert!(result.is_err(), "Should fail on timeout");
+        // Verify that the timeout is close to the configured 30s timeout.
+        let lower = Duration::from_secs(28);
+        let upper = Duration::from_secs(32);
         assert!(
-            elapsed.as_secs() < 35,
-            "Should timeout within 35s, not hang forever (took {:?})",
+            elapsed >= lower && elapsed <= upper,
+            "Expected timeout between {:?} and {:?}, but took {:?}",
+            lower,
+            upper,
             elapsed
         );
     }
