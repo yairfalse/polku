@@ -3,6 +3,9 @@
 //! Ingestors decode raw bytes from various protocols into unified Messages.
 //! Each source registers an Ingestor that knows how to deserialize that format.
 
+#[cfg(feature = "k8s")]
+pub mod k8s;
+
 use crate::error::PluginError;
 use crate::proto::Event;
 

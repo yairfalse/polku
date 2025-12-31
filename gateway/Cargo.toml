@@ -48,12 +48,19 @@ chrono = { version = "0.4", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# Kubernetes (optional) - versions aligned with Seppo
+seppo = { version = "0.1", optional = true }
+kube = { version = "2.0", optional = true, features = ["runtime", "derive"] }
+k8s-openapi = { version = "0.26", optional = true, features = ["v1_30"] }
+
 [build-dependencies]
 tonic-build = "0.12"
 
 [features]
 # Empty feature for sykli CI compatibility
 sykli = []
+# Kubernetes integration via Seppo
+k8s = ["dep:seppo", "dep:kube", "dep:k8s-openapi"]
 
 [dev-dependencies]
 tokio-test = "0.4"

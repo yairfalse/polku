@@ -19,6 +19,8 @@
 
 pub mod buffer;
 pub mod config;
+#[cfg(feature = "k8s")]
+pub mod deploy;
 pub mod emit;
 pub mod error;
 pub mod hub;
@@ -43,6 +45,10 @@ pub mod proto {
 }
 
 pub use config::Config;
+#[cfg(feature = "k8s")]
+pub use deploy::{PolkuDeployment, PolkuResources};
+#[cfg(feature = "k8s")]
+pub use emit::k8s::{K8sEmitter, K8sEmitterConfig, ResourceKind};
 pub use emit::resilience::{
     BackoffConfig, CircuitBreakerConfig, CircuitBreakerEmitter, CircuitState, DLQConfig,
     DLQEmitter, DeadLetterQueue, FailedEvent, ResilientEmitter, RetryEmitter,
@@ -50,6 +56,8 @@ pub use emit::resilience::{
 pub use emit::{Emitter, GrpcEmitter, StdoutEmitter, WebhookEmitter};
 pub use error::{PluginError, PolkuError, Result};
 pub use hub::{Hub, HubRunner, MessageSender};
+#[cfg(feature = "k8s")]
+pub use ingest::k8s::{K8sIngestor, K8sIngestorConfig, spawn_k8s_ingestor};
 pub use ingest::{IngestContext, Ingestor};
 pub use message::Message;
 pub use middleware::{Filter, Middleware, MiddlewareChain, PassThrough, Transform};

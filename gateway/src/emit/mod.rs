@@ -4,6 +4,8 @@
 //! All registered emitters receive messages in a fan-out pattern.
 
 pub mod grpc;
+#[cfg(feature = "k8s")]
+pub mod k8s;
 pub mod resilience;
 pub mod stdout;
 pub mod webhook;
