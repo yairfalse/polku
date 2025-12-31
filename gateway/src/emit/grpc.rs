@@ -210,17 +210,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_grpc_emitter_connect_failure() {
-        // Try to connect to a non-existent server
+        // Try to connect to a non-existent server; this should fail eagerly.
         let result = GrpcEmitter::new("http://127.0.0.1:1").await;
-        // Note: tonic lazily connects, so this might succeed
-        // The failure would happen on emit. Let's test both scenarios.
-        if let Ok(emitter) = result {
-            // If connection is lazy, health check should fail
-            assert!(
-                !emitter.health().await,
-                "Health should fail on bad connection"
-            );
-        }
+        assert!(
+            result.is_err(),
+            "Connecting to an unavailable gRPC endpoint should fail"
+        );
     }
 
     #[tokio::test]
