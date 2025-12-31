@@ -24,7 +24,7 @@ fn main() {
         .mount_cache(&cargo_registry, "/usr/local/cargo/registry")
         .mount_cache(&cargo_git, "/usr/local/cargo/git")
         .workdir("/src")
-        .run("cargo fmt --all --check")
+        .run("rustup component add rustfmt && cargo fmt --all --check")
         .inputs(&["**/*.rs", "Cargo.toml"]);
 
     // Clippy lint
@@ -36,7 +36,7 @@ fn main() {
         .mount_cache(&cargo_git, "/usr/local/cargo/git")
         .mount_cache(&target_cache, "/src/target")
         .workdir("/src")
-        .run("cargo clippy --all-targets -- -D warnings")
+        .run("rustup component add clippy && cargo clippy --all-targets -- -D warnings")
         .inputs(&["**/*.rs", "Cargo.toml", "Cargo.lock"])
         .after(&["fmt"]);
 
