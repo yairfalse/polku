@@ -2,7 +2,8 @@
 
 use crate::error::{PolkuError, Result};
 use prometheus::{
-    CounterVec, Gauge, HistogramVec, register_counter_vec, register_gauge, register_histogram_vec,
+    CounterVec, Encoder, Gauge, HistogramVec, TextEncoder, register_counter_vec, register_gauge,
+    register_histogram_vec,
 };
 use std::sync::OnceLock;
 
@@ -161,6 +162,20 @@ impl Metrics {
     /// Set plugin health
     pub fn set_plugin_health(&self, healthy: bool) {
         self.plugin_health.set(if healthy { 1.0 } else { 0.0 });
+    }
+}
+
+/// Gather all metrics and encode as Prometheus text format
+///
+/// Returns the metrics as a String, ready to be served via HTTP.
+pub fn gather() -> String {
+    let encoder = TextEncoder::new();
+    let metric_families = prometheus::gather();
+    let mut buffer = Vec::new();
+    if encoder.encode(&metric_families, &mut buffer).is_ok() {
+        String::from_utf8(buffer).unwrap_or_default()
+    } else {
+        String::new()
     }
 }
 

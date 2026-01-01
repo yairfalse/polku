@@ -41,6 +41,9 @@ bytes = "1"
 reqwest = { version = "0.12", features = ["json"] }
 base64 = "0.22"
 
+# HTTP (metrics endpoint)
+axum = "0.8"
+
 # Utils
 parking_lot = "0.12"
 ulid = "1"
@@ -57,4 +60,3 @@ sykli = []
 
 [dev-dependencies]
 tokio-test = "0.4"
-axum = "0.8"

@@ -22,6 +22,7 @@ use crate::buffer::RingBuffer;
 use crate::emit::Emitter;
 use crate::error::PluginError;
 use crate::message::Message;
+use crate::metrics::Metrics;
 use crate::middleware::{Middleware, MiddlewareChain};
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -165,6 +166,11 @@ impl HubRunner {
             "Hub started"
         );
 
+        // Initialize Prometheus metrics (ignore error if already initialized)
+        if let Ok(metrics) = Metrics::init() {
+            metrics.set_buffer_capacity(self.buffer.capacity());
+        }
+
         if self.emitters.is_empty() {
             warn!("No emitters registered - messages will be buffered but not delivered");
         }
@@ -181,6 +187,11 @@ impl HubRunner {
 
         // Process incoming messages
         while let Some(msg) = self.rx.recv().await {
+            // Record received message
+            if let Some(metrics) = Metrics::get() {
+                metrics.record_received(&msg.source, &msg.message_type, 1);
+            }
+
             // Apply middleware
             let processed = self.middleware.process(msg).await;
 
@@ -189,6 +200,15 @@ impl HubRunner {
                 let dropped = self.buffer.push(vec![msg]);
                 if dropped > 0 {
                     warn!(dropped = dropped, "Buffer overflow, messages dropped");
+                    // Record dropped due to buffer overflow
+                    if let Some(metrics) = Metrics::get() {
+                        metrics.record_dropped("buffer_overflow", dropped as u64);
+                    }
+                }
+            } else {
+                // Message was filtered by middleware
+                if let Some(metrics) = Metrics::get() {
+                    metrics.record_dropped("middleware_filtered", 1);
                 }
             }
         }
@@ -241,6 +261,12 @@ async fn flush_loop(
         }
 
         let messages = buffer.drain(BATCH_SIZE);
+
+        // Update buffer size metric after drain
+        if let Some(metrics) = Metrics::get() {
+            metrics.set_buffer_size(buffer.len());
+        }
+
         if messages.is_empty() {
             continue;
         }
@@ -271,12 +297,22 @@ async fn flush_loop(
                     count = routed_events.len(),
                     "Failed to emit"
                 );
+                // Record emit failures
+                if let Some(metrics) = Metrics::get() {
+                    metrics.record_dropped(emitter.name(), routed_events.len() as u64);
+                }
             } else {
                 debug!(
                     emitter = emitter.name(),
                     count = routed_events.len(),
                     "Emitted"
                 );
+                // Record successful forwards
+                if let Some(metrics) = Metrics::get() {
+                    for event in &routed_events {
+                        metrics.record_forwarded(emitter.name(), &event.event_type, 1);
+                    }
+                }
             }
         }
     }
