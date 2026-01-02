@@ -312,10 +312,29 @@ pub trait Middleware: Send + Sync {
 
 ### Built-in Middleware
 
-POLKU provides several middleware out of the box:
+POLKU provides 10 middleware out of the box:
+
+| Middleware | Purpose |
+|------------|---------|
+| `Filter` | Drop messages that don't match a predicate |
+| `Transform` | Modify messages (payload, metadata) |
+| `Router` | Set `route_to` based on content |
+| `RateLimiter` | Global rate limiting (token bucket) |
+| `Throttle` | Per-source rate limiting |
+| `Deduplicator` | Drop duplicate messages within time window |
+| `Sampler` | Pass X% of messages (probabilistic) |
+| `Enricher` | Add metadata via async function |
+| `Validator` | Schema validation with drop/tag modes |
+| `Aggregator` | Batch N messages into 1 combined message |
 
 ```rust
-use polku_gateway::{Filter, Transform, Router, RateLimiter, Deduplicator, Sampler};
+use polku_gateway::{
+    Filter, Transform, Router, RateLimiter, Throttle,
+    Deduplicator, Sampler, Enricher, Validator, Aggregator,
+    AggregateStrategy, ValidationResult, InvalidAction,
+};
+use std::time::Duration;
+use std::collections::HashMap;
 
 // Filter: drop messages that don't match
 let filter = Filter::new(|msg| msg.message_type.starts_with("important."));
@@ -327,13 +346,59 @@ let transform = Transform::new(|mut msg| {
 });
 
 // Router: set route_to based on content
-let router = Router::new(|msg| {
-    if msg.message_type.contains("critical") {
-        vec!["pagerduty".into(), "slack".into()]
-    } else {
-        vec!["logs".into()]
+let router = Router::new()
+    .rule(|msg| msg.message_type.contains("critical"), vec!["pagerduty".into(), "slack".into()])
+    .rule(|msg| msg.source == "payments", vec!["audit".into()])
+    .default_route(vec!["logs".into()]);
+
+// RateLimiter: global rate limit (100/sec, burst 50)
+let rate_limiter = RateLimiter::new(100, 50);
+
+// Throttle: per-source rate limit (each source gets own bucket)
+let throttle = Throttle::new(100, 10); // 100/sec, burst 10 per source
+
+// Deduplicator: drop duplicates within 5 minutes
+let dedup = Deduplicator::new(Duration::from_secs(300));
+
+// Sampler: pass only 10% of messages
+let sampler = Sampler::new(0.1);
+
+// Enricher: add metadata (sync or async)
+let enricher = Enricher::new(|msg| {
+    let source = msg.source.clone();
+    async move {
+        let mut meta = HashMap::new();
+        meta.insert("region".to_string(), lookup_region(&source).await);
+        meta
     }
 });
+
+// Enricher with static metadata
+let static_enricher = Enricher::with_static({
+    let mut m = HashMap::new();
+    m.insert("env".to_string(), "production".to_string());
+    m
+});
+
+// Validator: JSON schema validation
+let json_validator = Validator::json(); // drops invalid JSON
+
+// Validator: size limit with tagging (don't drop, just mark)
+let size_validator = Validator::max_size(1_000_000)
+    .on_invalid(InvalidAction::Tag); // adds _validation_error metadata
+
+// Validator: custom logic
+let custom_validator = Validator::new(|msg| {
+    if msg.metadata.contains_key("api_key") {
+        ValidationResult::Valid
+    } else {
+        ValidationResult::Invalid("missing api_key".to_string())
+    }
+});
+
+// Aggregator: batch 100 messages into 1
+let aggregator = Aggregator::new(100)
+    .strategy(AggregateStrategy::JsonArray); // or Concat, First, Last
 ```
 
 ### Example: Custom Enrichment Middleware
