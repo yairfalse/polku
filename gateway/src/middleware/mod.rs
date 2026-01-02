@@ -210,6 +210,14 @@ mod dedup;
 pub use dedup::Deduplicator;
 mod sampler;
 pub use sampler::Sampler;
+mod throttle;
+pub use throttle::Throttle;
+mod enricher;
+pub use enricher::Enricher;
+mod validator;
+pub use validator::{InvalidAction, ValidationResult, Validator};
+mod aggregator;
+pub use aggregator::{AggregateStrategy, Aggregator};
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
