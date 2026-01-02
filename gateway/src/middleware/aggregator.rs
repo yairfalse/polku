@@ -3,10 +3,29 @@
 //! Collects messages and emits a combined message when batch size is reached.
 //! Useful for reducing message volume or combining related events.
 //!
+//! # Flush Behavior
+//!
+//! Messages are held until `batch_size` is reached. To avoid losing pending
+//! messages on shutdown, call `flush()` before dropping the aggregator:
+//!
+//! ```ignore
+//! // Before shutdown
+//! if let Some(final_msg) = aggregator.flush() {
+//!     // Process the final batch
+//! }
+//! ```
+//!
+//! # Metadata Handling
+//!
+//! Metadata from all messages in a batch is merged. When keys conflict,
+//! **last message wins** - later messages overwrite earlier ones. The
+//! `polku.aggregator.count` key is added with the batch size.
+//!
 //! # Limitations
 //!
 //! This is a count-based aggregator. It waits for N messages before emitting.
-//! For time-based aggregation, use Hub's flush interval or a dedicated component.
+//! For time-based aggregation, integrate with Hub's flush interval by calling
+//! `flush()` periodically from a timer task.
 
 use crate::message::Message;
 use crate::middleware::Middleware;
@@ -70,12 +89,18 @@ impl Aggregator {
     }
 
     /// Combine buffered messages into a single message
+    ///
+    /// # Panics
+    ///
+    /// Debug builds will panic if called with an empty vector.
+    /// This invariant is enforced by `process()` and `flush()`.
     fn combine(&self, messages: Vec<Message>) -> Message {
-        if messages.is_empty() {
-            return Message::new("aggregated", "aggregate", Bytes::new());
-        }
+        debug_assert!(
+            !messages.is_empty(),
+            "Aggregator::combine called with empty messages"
+        );
 
-        // Use first message as template
+        // Use first message as template (safe due to debug_assert)
         let first = &messages[0];
 
         // Combine payloads based on strategy
@@ -85,12 +110,23 @@ impl Aggregator {
                     .iter()
                     .map(|m| {
                         // Try to parse as JSON, fall back to string
-                        serde_json::from_slice(&m.payload).unwrap_or_else(|_| {
+                        serde_json::from_slice(&m.payload).unwrap_or_else(|e| {
+                            tracing::debug!(
+                                id = %m.id,
+                                error = %e,
+                                "payload is not JSON, using string representation"
+                            );
                             serde_json::Value::String(m.payload_str().unwrap_or("").to_string())
                         })
                     })
                     .collect();
-                Bytes::from(serde_json::to_vec(&payloads).unwrap_or_default())
+                match serde_json::to_vec(&payloads) {
+                    Ok(bytes) => Bytes::from(bytes),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "failed to serialize aggregated payloads");
+                        Bytes::new()
+                    }
+                }
             }
             AggregateStrategy::Concat => {
                 let combined: Vec<u8> = messages
@@ -110,12 +146,15 @@ impl Aggregator {
             AggregateStrategy::First => first.payload.clone(),
         };
 
-        // Merge metadata from all messages
+        // Merge metadata from all messages (last message wins on conflict)
         let mut metadata: HashMap<String, String> = HashMap::new();
         for msg in &messages {
             metadata.extend(msg.metadata.clone());
         }
-        metadata.insert("_aggregated_count".to_string(), messages.len().to_string());
+        metadata.insert(
+            "polku.aggregator.count".to_string(),
+            messages.len().to_string(),
+        );
 
         // Collect all sources
         let sources: Vec<&str> = messages.iter().map(|m| m.source.as_str()).collect();
@@ -271,7 +310,7 @@ mod tests {
         assert_eq!(result.metadata.get("key1"), Some(&"val1".to_string()));
         assert_eq!(result.metadata.get("key2"), Some(&"val2".to_string()));
         assert_eq!(
-            result.metadata.get("_aggregated_count"),
+            result.metadata.get("polku.aggregator.count"),
             Some(&"2".to_string())
         );
     }
@@ -330,7 +369,7 @@ mod tests {
         // Flush should return combined message
         let result = aggregator.flush().unwrap();
         assert_eq!(
-            result.metadata.get("_aggregated_count"),
+            result.metadata.get("polku.aggregator.count"),
             Some(&"3".to_string())
         );
         assert_eq!(aggregator.pending(), 0);

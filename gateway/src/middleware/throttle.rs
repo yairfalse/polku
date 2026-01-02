@@ -2,6 +2,12 @@
 //!
 //! Like RateLimiter but maintains separate limits per source.
 //! Useful when different sources have different throughput needs.
+//!
+//! # Memory Management
+//!
+//! To prevent unbounded memory growth from ephemeral sources, buckets are
+//! evicted LRU-style when `max_sources` is reached. Configure this based
+//! on your expected source cardinality.
 
 use crate::message::Message;
 use crate::middleware::Middleware;
@@ -15,13 +21,27 @@ use std::time::Instant;
 ///
 /// Each source gets its own token bucket with the configured rate/burst.
 /// New sources are allocated a bucket on first message.
+///
+/// # Memory Bounds
+///
+/// Set `max_sources` to limit memory usage. When exceeded, the least
+/// recently used bucket is evicted. Default is 10,000 sources.
 pub struct Throttle {
     /// Rate per second for each source
     rate: u64,
     /// Burst capacity for each source
     burst: u64,
-    /// Per-source buckets
-    buckets: RwLock<HashMap<String, TokenBucket>>,
+    /// Maximum number of sources to track (LRU eviction when exceeded)
+    max_sources: usize,
+    /// Per-source buckets with last-access time
+    buckets: RwLock<HashMap<String, TrackedBucket>>,
+}
+
+/// Token bucket with last-access tracking for LRU eviction
+struct TrackedBucket {
+    bucket: TokenBucket,
+    last_access_nanos: AtomicU64,
+    created: Instant,
 }
 
 /// Individual token bucket (similar to RateLimiter internals)
@@ -130,44 +150,108 @@ impl TokenBucket {
     }
 }
 
+impl TrackedBucket {
+    fn new(rate: u64, burst: u64) -> Self {
+        let now = Instant::now();
+        Self {
+            bucket: TokenBucket::new(rate, burst),
+            last_access_nanos: AtomicU64::new(0),
+            created: now,
+        }
+    }
+
+    fn try_acquire(&self) -> bool {
+        // Update last access time
+        let elapsed = self.created.elapsed().as_nanos() as u64;
+        self.last_access_nanos.store(elapsed, Ordering::Relaxed);
+        self.bucket.try_acquire()
+    }
+
+    fn last_access(&self) -> u64 {
+        self.last_access_nanos.load(Ordering::Relaxed)
+    }
+}
+
 impl Throttle {
     /// Create a new per-source throttle
     ///
     /// Each source gets its own bucket with the specified rate and burst.
+    /// Default max_sources is 10,000.
     pub fn new(rate: u64, burst: u64) -> Self {
         Self {
             rate,
             burst,
+            max_sources: 10_000,
             buckets: RwLock::new(HashMap::new()),
         }
     }
 
+    /// Set the maximum number of sources to track
+    ///
+    /// When exceeded, the least recently used bucket is evicted.
+    pub fn max_sources(mut self, max: usize) -> Self {
+        self.max_sources = max;
+        self
+    }
+
     /// Get or create a bucket for the given source
     fn get_or_create_bucket(&self, source: &str) -> bool {
-        // Fast path: check if bucket exists
+        // Fast path: check if bucket exists (read lock)
         {
             let buckets = self.buckets.read();
-            if let Some(bucket) = buckets.get(source) {
-                return bucket.try_acquire();
+            if let Some(tracked) = buckets.get(source) {
+                return tracked.try_acquire();
             }
         }
 
-        // Slow path: create new bucket
-        let mut buckets = self.buckets.write();
-        // Double-check after acquiring write lock
-        if let Some(bucket) = buckets.get(source) {
-            return bucket.try_acquire();
+        // Slow path: create new bucket (write lock)
+        {
+            let mut buckets = self.buckets.write();
+
+            // Double-check after acquiring write lock
+            if let Some(tracked) = buckets.get(source) {
+                return tracked.try_acquire();
+            }
+
+            // Evict LRU bucket if at capacity
+            if buckets.len() >= self.max_sources {
+                self.evict_lru(&mut buckets);
+            }
+
+            // Insert new bucket
+            let tracked = TrackedBucket::new(self.rate, self.burst);
+            let result = tracked.try_acquire();
+            buckets.insert(source.to_string(), tracked);
+            result
+        }
+    }
+
+    /// Evict the least recently used bucket
+    fn evict_lru(&self, buckets: &mut HashMap<String, TrackedBucket>) {
+        if buckets.is_empty() {
+            return;
         }
 
-        let bucket = TokenBucket::new(self.rate, self.burst);
-        let result = bucket.try_acquire();
-        buckets.insert(source.to_string(), bucket);
-        result
+        // Find LRU bucket
+        let lru_source = buckets
+            .iter()
+            .min_by_key(|(_, tracked)| tracked.last_access())
+            .map(|(source, _)| source.clone());
+
+        if let Some(source) = lru_source {
+            tracing::debug!(source = %source, "evicting LRU throttle bucket");
+            buckets.remove(&source);
+        }
     }
 
     /// Get the number of tracked sources
     pub fn source_count(&self) -> usize {
         self.buckets.read().len()
+    }
+
+    /// Get the maximum number of sources
+    pub fn max_sources_limit(&self) -> usize {
+        self.max_sources
     }
 }
 
@@ -297,5 +381,46 @@ mod tests {
 
         // All 10 sources should be tracked
         assert_eq!(throttle.source_count(), 10);
+    }
+
+    #[tokio::test]
+    async fn test_throttle_lru_eviction() {
+        // max_sources = 3, so 4th source should trigger eviction
+        let throttle = Throttle::new(100, 10).max_sources(3);
+
+        // Add 3 sources
+        for i in 0..3 {
+            let msg = Message::new(format!("source-{}", i), "evt", Bytes::new());
+            throttle.process(msg).await;
+        }
+        assert_eq!(throttle.source_count(), 3);
+
+        // Wait a bit, then access source-1 and source-2 to update their LRU time
+        tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
+        let msg = Message::new("source-1", "evt", Bytes::new());
+        throttle.process(msg).await;
+        let msg = Message::new("source-2", "evt", Bytes::new());
+        throttle.process(msg).await;
+
+        // Add a 4th source - should evict source-0 (least recently used)
+        let msg = Message::new("source-3", "evt", Bytes::new());
+        throttle.process(msg).await;
+
+        // Still only 3 sources (one was evicted)
+        assert_eq!(throttle.source_count(), 3);
+
+        // source-0 should have been evicted, source-1, source-2, source-3 remain
+        // Adding source-0 again creates a new bucket
+        let msg = Message::new("source-0", "evt", Bytes::new());
+        throttle.process(msg).await;
+
+        // Now we have 3 again (evicted another LRU)
+        assert_eq!(throttle.source_count(), 3);
+    }
+
+    #[test]
+    fn test_throttle_max_sources_builder() {
+        let throttle = Throttle::new(100, 10).max_sources(500);
+        assert_eq!(throttle.max_sources_limit(), 500);
     }
 }

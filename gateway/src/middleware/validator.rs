@@ -133,9 +133,10 @@ impl Middleware for Validator {
                 match self.on_invalid {
                     InvalidAction::Drop => None,
                     InvalidAction::Tag => {
-                        msg.metadata.insert("_validation_error".to_string(), reason);
                         msg.metadata
-                            .insert("_valid".to_string(), "false".to_string());
+                            .insert("polku.validator.error".to_string(), reason);
+                        msg.metadata
+                            .insert("polku.validator.valid".to_string(), "false".to_string());
                         Some(msg)
                     }
                 }
@@ -179,10 +180,13 @@ mod tests {
         let result = validator.process(msg).await.unwrap();
 
         assert_eq!(
-            result.metadata.get("_validation_error"),
+            result.metadata.get("polku.validator.error"),
             Some(&"bad data".to_string())
         );
-        assert_eq!(result.metadata.get("_valid"), Some(&"false".to_string()));
+        assert_eq!(
+            result.metadata.get("polku.validator.valid"),
+            Some(&"false".to_string())
+        );
     }
 
     #[tokio::test]
