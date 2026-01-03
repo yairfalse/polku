@@ -3,12 +3,16 @@
 //! Measures push/drain performance of the ring buffer.
 
 use bytes::Bytes;
-use criterion::{criterion_group, criterion_main, Criterion, Throughput};
-use polku_gateway::buffer::RingBuffer;
+use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use polku_gateway::Message;
+use polku_gateway::buffer::RingBuffer;
 
 fn make_message(i: usize) -> Message {
-    Message::new("bench", format!("event-{}", i), Bytes::from("benchmark payload data"))
+    Message::new(
+        "bench",
+        format!("event-{}", i),
+        Bytes::from("benchmark payload data"),
+    )
 }
 
 fn make_messages(count: usize) -> Vec<Message> {

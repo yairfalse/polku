@@ -40,6 +40,10 @@ use tracing::{debug, error, info, warn};
 pub struct Hub {
     /// Buffer capacity
     buffer_capacity: usize,
+    /// Flush batch size (messages per flush)
+    batch_size: usize,
+    /// Flush interval in milliseconds
+    flush_interval_ms: u64,
     /// Middleware chain (applied before buffering)
     middleware: MiddlewareChain,
     /// Registered emitters
@@ -51,9 +55,30 @@ impl Hub {
     pub fn new() -> Self {
         Self {
             buffer_capacity: 10_000,
+            batch_size: 100,
+            flush_interval_ms: 10,
             middleware: MiddlewareChain::new(),
             emitters: Vec::new(),
         }
+    }
+
+    /// Set the flush batch size
+    ///
+    /// Default is 100 messages per flush.
+    /// Larger batches = higher throughput, higher latency.
+    pub fn batch_size(mut self, size: usize) -> Self {
+        self.batch_size = size;
+        self
+    }
+
+    /// Set the flush interval in milliseconds
+    ///
+    /// Default is 10ms.
+    /// Lower = lower latency, higher CPU.
+    /// Higher = higher throughput, higher latency.
+    pub fn flush_interval_ms(mut self, ms: u64) -> Self {
+        self.flush_interval_ms = ms;
+        self
     }
 
     /// Set the buffer capacity
@@ -104,6 +129,8 @@ impl Hub {
         let runner = HubRunner {
             rx,
             buffer: Arc::new(RingBuffer::new(self.buffer_capacity)),
+            batch_size: self.batch_size,
+            flush_interval_ms: self.flush_interval_ms,
             middleware: self.middleware,
             emitters: self.emitters,
         };
@@ -145,6 +172,8 @@ impl MessageSender {
 pub struct HubRunner {
     rx: mpsc::Receiver<Message>,
     buffer: Arc<RingBuffer>,
+    batch_size: usize,
+    flush_interval_ms: u64,
     middleware: MiddlewareChain,
     emitters: Vec<Arc<dyn Emitter>>,
 }
@@ -181,8 +210,10 @@ impl HubRunner {
         // Spawn emitter flusher
         let buffer = Arc::clone(&self.buffer);
         let emitters = self.emitters.clone();
+        let batch_size = self.batch_size;
+        let flush_interval_ms = self.flush_interval_ms;
         let flush_handle = tokio::spawn(async move {
-            flush_loop(buffer, emitters, shutdown_rx).await;
+            flush_loop(buffer, emitters, shutdown_rx, batch_size, flush_interval_ms).await;
         });
 
         // Process incoming messages
@@ -240,10 +271,9 @@ async fn flush_loop(
     buffer: Arc<RingBuffer>,
     emitters: Vec<Arc<dyn Emitter>>,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    batch_size: usize,
+    flush_interval_ms: u64,
 ) {
-    const BATCH_SIZE: usize = 100;
-    const FLUSH_INTERVAL_MS: u64 = 10;
-
     loop {
         // Check if shutdown requested and buffer is empty
         if *shutdown_rx.borrow() && buffer.is_empty() {
@@ -253,14 +283,14 @@ async fn flush_loop(
 
         // Either wait for interval OR shutdown signal
         tokio::select! {
-            _ = tokio::time::sleep(tokio::time::Duration::from_millis(FLUSH_INTERVAL_MS)) => {}
+            _ = tokio::time::sleep(tokio::time::Duration::from_millis(flush_interval_ms)) => {}
             _ = shutdown_rx.changed() => {
                 // Shutdown signaled - continue loop to drain buffer
                 debug!("Flush loop: shutdown signaled, draining buffer");
             }
         }
 
-        let messages = buffer.drain(BATCH_SIZE);
+        let messages = buffer.drain(batch_size);
 
         // Update buffer size metric after drain
         if let Some(metrics) = Metrics::get() {

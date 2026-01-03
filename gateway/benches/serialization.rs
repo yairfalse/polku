@@ -3,7 +3,7 @@
 //! Measures Message <-> Event conversion overhead.
 
 use bytes::Bytes;
-use criterion::{criterion_group, criterion_main, Criterion, Throughput};
+use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use polku_gateway::{Event, Message};
 use std::collections::HashMap;
 
@@ -19,7 +19,9 @@ fn make_message() -> Message {
         source: "benchmark-service".to_string(),
         message_type: "user.created".to_string(),
         metadata,
-        payload: Bytes::from(r#"{"user_id": 12345, "email": "test@example.com", "name": "Test User"}"#),
+        payload: Bytes::from(
+            r#"{"user_id": 12345, "email": "test@example.com", "name": "Test User"}"#,
+        ),
         route_to: vec!["output-1".to_string(), "output-2".to_string()],
     }
 }

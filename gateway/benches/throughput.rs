@@ -3,10 +3,10 @@
 //! Measures messages/second through the full pipeline.
 
 use bytes::Bytes;
-use criterion::{criterion_group, criterion_main, Criterion, Throughput};
+use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use polku_gateway::{Emitter, Event, Hub, Message, PluginError};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// No-op emitter that just counts events
 struct NullEmitter {
@@ -42,7 +42,11 @@ impl Emitter for NullEmitter {
 }
 
 fn make_message(i: usize) -> Message {
-    Message::new("bench", format!("event-{}", i), Bytes::from("benchmark payload"))
+    Message::new(
+        "bench",
+        format!("event-{}", i),
+        Bytes::from("benchmark payload"),
+    )
 }
 
 fn bench_hub_throughput(c: &mut Criterion) {
@@ -62,9 +66,7 @@ fn bench_hub_throughput(c: &mut Criterion) {
                         .build();
 
                     // Spawn runner
-                    let runner_handle = tokio::spawn(async move {
-                        runner.run().await
-                    });
+                    let runner_handle = tokio::spawn(async move { runner.run().await });
 
                     // Send messages
                     for i in 0..batch_size {
@@ -191,5 +193,90 @@ fn bench_hub_with_middleware(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_hub_throughput, bench_hub_with_middleware);
+/// Hot path benchmark - measures pure send throughput on a pre-warmed Hub
+///
+/// This avoids including Hub creation/teardown in measurements.
+/// Uses fast flush interval (1ms) to reduce flush loop bottleneck.
+fn bench_hot_path(c: &mut Criterion) {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+
+    let mut group = c.benchmark_group("hot_path");
+    group.throughput(Throughput::Elements(10_000));
+
+    // Pre-warmed Hub with fast flush
+    group.bench_function("prewarmed_10k", |b| {
+        // Setup once outside iterations
+        let emitter = Arc::new(NullEmitter::new());
+        let (sender, runner) = Hub::new()
+            .buffer_capacity(50_000)
+            .batch_size(1000) // Larger batches
+            .flush_interval_ms(1) // Fast flush - 1ms instead of 10ms
+            .emitter_arc(emitter.clone())
+            .build();
+
+        // Start runner
+        let runner_handle = rt.spawn(async move { runner.run().await });
+
+        // Warm up the channel
+        rt.block_on(async {
+            for i in 0..100 {
+                let _ = sender.send(make_message(i)).await;
+            }
+            // Give flush loop time to process
+            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        });
+
+        // Benchmark just the send operations
+        b.iter(|| {
+            rt.block_on(async {
+                for i in 0..10_000 {
+                    sender.send(make_message(i)).await.unwrap();
+                }
+            })
+        });
+
+        // Cleanup
+        drop(sender);
+        let _ = rt.block_on(async { runner_handle.await });
+    });
+
+    // Compare with try_send (non-blocking)
+    group.bench_function("try_send_10k", |b| {
+        let emitter = Arc::new(NullEmitter::new());
+        let (sender, runner) = Hub::new()
+            .buffer_capacity(100_000) // Larger buffer for try_send
+            .batch_size(1000)
+            .flush_interval_ms(1)
+            .emitter_arc(emitter.clone())
+            .build();
+
+        let runner_handle = rt.spawn(async move { runner.run().await });
+
+        // Warm up
+        rt.block_on(async {
+            for i in 0..100 {
+                let _ = sender.try_send(make_message(i));
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        });
+
+        b.iter(|| {
+            for i in 0..10_000 {
+                let _ = sender.try_send(make_message(i));
+            }
+        });
+
+        drop(sender);
+        let _ = rt.block_on(async { runner_handle.await });
+    });
+
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    bench_hub_throughput,
+    bench_hub_with_middleware,
+    bench_hot_path
+);
 criterion_main!(benches);

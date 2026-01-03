@@ -3,7 +3,7 @@
 //! Measures cost of each middleware type per message.
 
 use bytes::Bytes;
-use criterion::{criterion_group, criterion_main, Criterion, Throughput};
+use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use polku_gateway::{
     Aggregator, Deduplicator, Enricher, Filter, Message, Middleware, RateLimiter, Sampler,
     Throttle, Transform, Validator,
@@ -12,7 +12,11 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 fn make_message() -> Message {
-    Message::new("bench-source", "bench.event", Bytes::from(r#"{"key": "value"}"#))
+    Message::new(
+        "bench-source",
+        "bench.event",
+        Bytes::from(r#"{"key": "value"}"#),
+    )
 }
 
 fn bench_individual_middleware(c: &mut Criterion) {

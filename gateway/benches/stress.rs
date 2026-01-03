@@ -3,10 +3,10 @@
 //! Pushes until buffer overflows or system chokes.
 
 use bytes::Bytes;
-use criterion::{criterion_group, criterion_main, Criterion, Throughput};
-use polku_gateway::{Emitter, Event, Hub, Message, PluginError, Transform};
-use std::sync::atomic::{AtomicU64, Ordering};
+use criterion::{Criterion, Throughput, criterion_group, criterion_main};
+use polku_gateway::{Emitter, Event, Hub, Message, PluginError};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 /// Slow emitter - simulates a backend that can't keep up
@@ -92,9 +92,7 @@ fn bench_sustained_throughput(c: &mut Criterion) {
                 let start = Instant::now();
 
                 // Spawn runner
-                let runner_handle = tokio::spawn(async move {
-                    runner.run().await
-                });
+                let runner_handle = tokio::spawn(async move { runner.run().await });
 
                 // Blast 100k messages as fast as possible
                 for i in 0..100_000 {
@@ -139,9 +137,7 @@ fn bench_backpressure(c: &mut Criterion) {
                     .emitter_arc(emitter.clone())
                     .build();
 
-                let runner_handle = tokio::spawn(async move {
-                    runner.run().await
-                });
+                let runner_handle = tokio::spawn(async move { runner.run().await });
 
                 let start = Instant::now();
                 let mut sent = 0;
@@ -191,13 +187,17 @@ fn bench_buffer_overflow(c: &mut Criterion) {
 
                     #[async_trait::async_trait]
                     impl Emitter for BlockingEmitter {
-                        fn name(&self) -> &'static str { "blocking" }
+                        fn name(&self) -> &'static str {
+                            "blocking"
+                        }
                         async fn emit(&self, _: &[Event]) -> Result<(), PluginError> {
                             // Sleep long enough that buffer fills up
                             tokio::time::sleep(Duration::from_secs(10)).await;
                             Ok(())
                         }
-                        async fn health(&self) -> bool { true }
+                        async fn health(&self) -> bool {
+                            true
+                        }
                     }
 
                     let (sender, runner) = Hub::new()
@@ -251,9 +251,7 @@ fn bench_large_payloads(c: &mut Criterion) {
                         .emitter_arc(emitter.clone())
                         .build();
 
-                    let runner_handle = tokio::spawn(async move {
-                        runner.run().await
-                    });
+                    let runner_handle = tokio::spawn(async move { runner.run().await });
 
                     for i in 0..1000 {
                         let msg = Message::new("stress", format!("evt-{}", i), payload.clone());
